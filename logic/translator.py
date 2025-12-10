@@ -109,8 +109,8 @@ class TranslatorThread(QThread):
             # OPTIMIZATION: Only include glossary terms that appear in the source text
             # This reduces token usage and noise
             # Ensure all values are strings before join (handle numbers etc)
-            batch_text = " ".join([str(v) for v in items.values()])
-            relevant_terms = {k: v for k, v in self.glossary.items() if k in batch_text}
+            batch_text_lower = " ".join([str(v) for v in items.values()]).lower()
+            relevant_terms = {k: v for k, v in self.glossary.items() if k.lower() in batch_text_lower}
             
             if relevant_terms:
                 glossary_text = "\n".join([f"- {k}: {v}" for k, v in relevant_terms.items()])

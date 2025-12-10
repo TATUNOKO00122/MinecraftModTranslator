@@ -14,6 +14,8 @@ def main():
             
     window = MainWindow()
     window.show()
+    window.raise_()  # 最前面に表示
+    window.activateWindow()  # アクティブ化
     
     sys.exit(app.exec())
 

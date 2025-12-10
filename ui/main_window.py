@@ -75,9 +75,9 @@ class MainWindow(QMainWindow):
         settings_action.triggered.connect(self.settings_dialog.show)
         self.toolbar.addAction(settings_action)
 
-        glossary_action = QAction("用語集", self)
-        glossary_action.triggered.connect(self.open_glossary)
-        self.toolbar.addAction(glossary_action)
+        dictionary_action = QAction("辞書", self)
+        dictionary_action.triggered.connect(self.open_glossary)
+        self.toolbar.addAction(dictionary_action)
         
         export_action = QAction("パック作成", self)
         export_action.triggered.connect(self.export_resource_pack)
@@ -104,10 +104,18 @@ class MainWindow(QMainWindow):
         self.mod_filter.addItem("未翻訳", "incomplete")
         self.mod_filter.addItem("翻訳済み", "complete")
         self.mod_filter.addItem("その他あり", "has_same")
+        self.mod_filter.addItem("ローマ字あり", "has_roman")
         self.mod_filter.addItem("FTBクエスト", "ftbquest")
         self.mod_filter.addItem("MODのみ", "mod")
         self.mod_filter.currentIndexChanged.connect(self.filter_mod_list)
         left_layout.addWidget(self.mod_filter)
+        
+        # Batch translate button
+        from PySide6.QtWidgets import QPushButton
+        self.batch_translate_btn = QPushButton("表示MOD一括翻訳")
+        self.batch_translate_btn.setToolTip("フィルター後の表示MODを順番に翻訳します")
+        self.batch_translate_btn.clicked.connect(self.start_batch_translate_all_mods)
+        left_layout.addWidget(self.batch_translate_btn)
         
         self.mod_list = NoScrollListWidget()
         self.mod_list.currentItemChanged.connect(self.on_mod_selected)
@@ -132,6 +140,7 @@ class MainWindow(QMainWindow):
         self.editor.table.customContextMenuRequested.connect(self.show_context_menu)
         self.editor.translationChanged.connect(self.update_current_mod_stats)
         self.editor.translate_btn.clicked.connect(self.start_auto_translate_all)
+        self.editor.extract_terms_btn.clicked.connect(self.start_manual_term_extraction)
         right_layout.addWidget(self.editor)
         
         splitter.addWidget(right_widget)
@@ -342,6 +351,19 @@ class MainWindow(QMainWindow):
                 has_same = any(t and t == mod_data["original"].get(k, "") 
                                for k, t in mod_data["translations"].items())
                 item.setHidden(not has_same)
+            elif filter_type == "has_roman":
+                # Check if any translation contains Roman letters (excluding color codes and placeholders)
+                import re
+                has_roman = False
+                for t in mod_data["translations"].values():
+                    if t:
+                        # Remove color codes and placeholders
+                        text = re.sub(r'§.', '', t)
+                        text = re.sub(r'%(\d+\$)?[sdfc]', '', text)
+                        if re.search(r'[A-Za-z]', text):
+                            has_roman = True
+                            break
+                item.setHidden(not has_roman)
             elif filter_type == "ftbquest":
                 is_ftb = mod_data.get("type") == "ftbquest"
                 item.setHidden(not is_ftb)
@@ -359,9 +381,15 @@ class MainWindow(QMainWindow):
         
         menu.addSeparator()
         
-        add_glossary_action = QAction("用語集に追加", self)
-        add_glossary_action.triggered.connect(lambda: self.add_selection_to_glossary())
-        menu.addAction(add_glossary_action)
+        add_dictionary_action = QAction("辞書に追加", self)
+        add_dictionary_action.triggered.connect(lambda: self.add_selection_to_glossary())
+        menu.addAction(add_dictionary_action)
+        
+        menu.addSeparator()
+
+        create_dict_all_action = QAction("全MODから辞書作成 (クエスト除外)", self)
+        create_dict_all_action.triggered.connect(self.create_dictionary_from_all_mods)
+        menu.addAction(create_dict_all_action)
         
         menu.addSeparator()
         
@@ -896,13 +924,16 @@ class MainWindow(QMainWindow):
 
     def start_auto_translate_all(self):
         if not self.current_mod_path: return
-        missing_items = self.editor.get_missing_items()
-        if not missing_items:
-            QMessageBox.information(self, "情報", "未翻訳の項目はありません。")
+        
+        # 表示中の全項目を翻訳対象にする
+        items = self.editor.get_visible_items()
+        if not items:
+            QMessageBox.information(self, "情報", "翻訳対象の項目がありません。")
             return
-        char_count = sum(len(str(v)) for v in missing_items.values())
-        self._run_translation(missing_items, 
-            f"{len(missing_items)} 項目（{char_count:,} 文字）を自動翻訳しますか？\n(API使用量にご注意ください)")
+        
+        char_count = sum(len(str(v)) for v in items.values())
+        self._run_translation(items, 
+            f"表示中の {len(items)} 項目（{char_count:,} 文字）を翻訳しますか？\n(API使用量にご注意ください)")
 
     def start_translate_selected(self):
         if not self.current_mod_path: return
@@ -911,6 +942,219 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "情報", "項目が選択されていません。")
             return
         self._run_translation(selected_items, f"選択された {len(selected_items)} 項目を翻訳しますか？")
+
+    def start_batch_translate_all_mods(self):
+        """Translate all visible MODs in the list (filtered MODs)."""
+        # Get visible (not hidden) MOD paths
+        visible_mod_paths = []
+        for i in range(self.mod_list.count()):
+            item = self.mod_list.item(i)
+            if not item.isHidden():
+                mod_path = item.data(Qt.UserRole)
+                if mod_path in self.loaded_mods:
+                    visible_mod_paths.append(mod_path)
+        
+        if not visible_mod_paths:
+            QMessageBox.information(self, "情報", "翻訳対象のMODがありません。")
+            return
+        
+        # Get current filter type to apply row-level filtering
+        import re
+        filter_type = self.mod_filter.currentData()
+        
+        # Collect items from visible MODs based on filter condition
+        all_items = {}
+        total_char_count = 0
+        mod_item_counts = {}
+        
+        for mod_path in visible_mod_paths:
+            mod_data = self.loaded_mods[mod_path]
+            original = mod_data["original"]
+            translations = mod_data["translations"]
+            
+            mod_items = {}
+            for key, text in original.items():
+                if not text:
+                    continue
+                
+                translation = translations.get(key, "")
+                
+                # Apply row-level filter based on MOD list filter type
+                include_item = False
+                
+                if filter_type == "all" or filter_type == "mod" or filter_type == "ftbquest":
+                    # Include all items
+                    include_item = True
+                elif filter_type == "incomplete":
+                    # Only untranslated items
+                    include_item = not translation
+                elif filter_type == "complete":
+                    # All items from completed MODs (re-translate all)
+                    include_item = True
+                elif filter_type == "has_same":
+                    # Only items where translation equals original
+                    include_item = translation and translation == text
+                elif filter_type == "has_roman":
+                    # Only items where translation contains Roman letters (excluding color codes/placeholders)
+                    if translation:
+                        text_without_codes = re.sub(r'§.', '', translation)
+                        text_without_codes = re.sub(r'%(\d+\$)?[sdfc]', '', text_without_codes)
+                        include_item = bool(re.search(r'[A-Za-z]', text_without_codes))
+                
+                if include_item:
+                    mod_items[key] = text
+            
+            if mod_items:
+                all_items.update(mod_items)
+                total_char_count += sum(len(str(v)) for v in mod_items.values())
+                mod_item_counts[mod_path] = len(mod_items)
+        
+        if not all_items:
+            QMessageBox.information(self, "情報", "翻訳対象の項目がありません。")
+            return
+        
+        # Confirm
+        confirm = QMessageBox.question(
+            self, "全MOD一括翻訳",
+            f"表示中の {len(visible_mod_paths)} MODから\n"
+            f"{len(all_items)} 項目（{total_char_count:,} 文字）を翻訳しますか？\n\n"
+            "(API使用量にご注意ください)",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if confirm != QMessageBox.Yes:
+            return
+        
+        # Save current MOD editor state
+        if self.current_mod_path:
+            self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
+        
+        # Store batch translation info
+        self._batch_translate_mod_paths = visible_mod_paths
+        self._batch_translate_mod_item_counts = mod_item_counts
+        self._batch_translate_all_items = all_items
+        
+        # Start translation with batch mode flag
+        self._run_batch_translation(all_items)
+
+    def _run_batch_translation(self, items):
+        """Run translation for batch MOD translation."""
+        settings = self.settings_dialog.get_settings()
+        api_key = settings["api_key"]
+        model = settings["model"]
+        
+        if not api_key:
+            QMessageBox.warning(self, "エラー", "API設定が必要です。\n設定ボタンからキーを入力してください。")
+            self.settings_dialog.show()
+            return
+
+        # Start Thread
+        self.progress_bar.setRange(0, len(items))
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.toolbar.setEnabled(False)
+        self.editor.setEnabled(False)
+        self.mod_list.setEnabled(False)
+        self.batch_translate_btn.setEnabled(False)
+
+        glossary_terms = self.glossary.get_terms()
+        self.translation_errors = []
+        self.translation_start_time = None
+        self.translation_total_items = len(items)
+        self.translation_original_items = items.copy()
+        
+        self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms)
+        self.translator_thread.progress.connect(self.on_translation_progress)
+        self.translator_thread.finished.connect(self._on_batch_translate_finished)
+        self.translator_thread.error.connect(self.on_translation_error)
+        self.translator_thread.start()
+
+    def _on_batch_translate_finished(self, results):
+        """Handle batch translation completion."""
+        # Distribute results back to each MOD
+        for mod_path in self._batch_translate_mod_paths:
+            mod_data = self.loaded_mods[mod_path]
+            original = mod_data["original"]
+            
+            for key in original.keys():
+                if key in results:
+                    mod_data["translations"][key] = results[key]
+        
+        # Update current editor if it's one of the translated MODs
+        if self.current_mod_path in self._batch_translate_mod_paths:
+            self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
+        
+        self.progress_bar.hide()
+        self.toolbar.setEnabled(True)
+        self.editor.setEnabled(True)
+        self.mod_list.setEnabled(True)
+        self.batch_translate_btn.setEnabled(True)
+        
+        self.refresh_all_mod_colors()
+        
+        if self.translation_errors:
+            error_count = len(self.translation_errors)
+            details = "\n".join(self.translation_errors[:3])
+            if error_count > 3:
+                details += f"\n...他 {error_count - 3} 件"
+                
+            QMessageBox.warning(self, "完了 (一部エラーあり)", 
+                                f"一括翻訳完了。{len(results)} 件翻訳、{error_count} 件エラー。\n\n{details}")
+        else:
+            QMessageBox.information(self, "完了", 
+                                    f"{len(self._batch_translate_mod_paths)} MODの一括翻訳が完了しました！\n"
+                                    f"翻訳件数: {len(results)} 件")
+        
+        # Cleanup
+        self._batch_translate_mod_paths = None
+        self._batch_translate_mod_item_counts = None
+        self._batch_translate_all_items = None
+        self.translator_thread = None
+        self.translation_original_items = None
+
+
+    def start_manual_term_extraction(self):
+        """Start manual AI term extraction via button click."""
+        if not self.current_mod_path: return
+        
+        # Get all current translations (merged with original where missing?)
+        # For extraction, we ideally want original + current translation
+        mod_data = self.loaded_mods[self.current_mod_path]
+        original_data = mod_data["original"]
+        current_translations = self.editor.get_translations() # This gets ALL non-empty translations from table
+        
+        if not current_translations:
+             QMessageBox.information(self, "情報", "翻訳済みの項目がありません。\n先に翻訳を行ってください。")
+             return
+
+        confirm = QMessageBox.question(
+            self, "用語抽出 (AI)",
+            f"{len(current_translations)} 件の翻訳から用語を抽出しますか？\n"
+            "(DeepSeek APIを使用)",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if confirm == QMessageBox.Yes:
+            # We need to pass original items corresponding to the translations
+            # Create a dict of relevant original items
+            relevant_originals = {}
+            filtered_translations = {}
+            
+            for key, trans in current_translations.items():
+                if key in original_data and trans:
+                    relevant_originals[key] = original_data[key]
+                    filtered_translations[key] = trans
+            
+            # Use temp variable to store originals (used by extractor thread logic if needed, 
+            # though AITermExtractorThread takes them as args, 
+            # BUT _show_term_extraction_dialog relies on self.translation_original_items for regex fallback/filtering)
+            # Actually, `_start_ai_term_extraction` uses `self.translation_original_items`.
+            # We should set it or pass it directly.
+            # Let's check `_start_ai_term_extraction` implementation again.
+            # It uses `self.translation_original_items`. So we must set it.
+            
+            self.translation_original_items = relevant_originals
+            self._start_ai_term_extraction(filtered_translations)
 
     def on_translate_finished(self, results):
         self.editor.update_translations(results)
@@ -943,6 +1187,106 @@ class MainWindow(QMainWindow):
         self.translator_thread = None
         self.translation_original_items = None
     
+    def create_dictionary_from_all_mods(self):
+        """Create dictionary from ALL loaded MODs, excluding quests."""
+        if not self.loaded_mods:
+            QMessageBox.information(self, "情報", "MODが読み込まれていません。")
+            return
+            
+        # Filter and collect text
+        target_items = {}
+        processed_mods = 0
+        excluded_mods = 0
+        
+        for path, mod_data in self.loaded_mods.items():
+            # Exclude FTB Quests explicitly
+            if mod_data.get("type") == "ftbquest":
+                excluded_mods += 1
+                continue
+            
+            # Add original text
+            # We want to extract terms from Original English text
+            # Some might have translations, we can pass them to improve context if available,
+            # but for term extraction, Original text is the primary source.
+            # However, AITermExtractorThread logic primarily looks at "original" -> "Japanese" pairs 
+            # to find Proper Nouns that need to be consistent.
+            # If we only have English, AI needs to infer what are the proper nouns.
+            # Wait, `extract_terms_from_batch` uses regex on color codes in BOTH original and translation.
+            # `AITermExtractorThread` asks AI to "Extract proper nouns... from the following text pairs".
+            # If we don't have translations yet, we can only provide English.
+            # But the user likely wants to create a dictionary BEFORE translating everything, to ensure consistency.
+            # OR, they might have some translations.
+            
+            # Let's collect items.
+            original_data = mod_data.get("original", {})
+            translation_data = mod_data.get("translations", {})
+            
+            for key, orig in original_data.items():
+                if not orig or not isinstance(orig, str): continue
+                
+                # If translation exists, use it. If not, pass None or empty string?
+                # AITermExtractorThread handles {key: {"original": ..., "translation": ...}}?
+                # No, AITermExtractorThread's __init__ takes:
+                # (original_items, translated_items, ...)
+                # original_items: dict {key: orig}
+                # translated_items: dict {key: trans}
+                
+                target_items[key] = {
+                    "original": orig,
+                    "translation": translation_data.get(key, "")
+                }
+            
+            processed_mods += 1
+
+        if not target_items:
+            QMessageBox.information(self, "情報", "対象となるテキストが見つかりませんでした。\n(すべてのMODが除外されたか、空です)")
+            return
+
+        # Confirm
+        confirm = QMessageBox.question(
+            self, "全MODから辞書作成",
+            f"対象MOD: {processed_mods} 件 (除外: {excluded_mods} 件)\n"
+            f"テキスト項目数: {len(target_items)} 件\n\n"
+            "AIを使用して用語を抽出しますか？\n"
+            "(項目数が多い場合、時間がかかることがあります)",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if confirm == QMessageBox.Yes:
+            # Prepare data for AITermExtractorThread
+            original_items = {k: v["original"] for k, v in target_items.items()}
+            translated_items = {k: v["translation"] for k, v in target_items.items() if v["translation"]}
+            
+            # Start extraction
+            self._start_ai_term_extraction_custom(original_items, translated_items)
+
+    def _start_ai_term_extraction_custom(self, original_items, translated_items):
+        """Start AI extraction with specific items."""
+        settings = self.settings_dialog.get_settings()
+        api_key = settings.get("api_key")
+        
+        if not api_key:
+            QMessageBox.warning(self, "エラー", "API設定が必要です。")
+            return
+        
+        self.statusBar().showMessage(f"AIで用語を抽出中... (対象: {len(original_items)} 項目)")
+        self.toolbar.setEnabled(False)
+        
+        existing_glossary = self.glossary.get_terms()
+        
+        # Use DeepSeek
+        self.ai_extractor_thread = AITermExtractorThread(
+            original_items,
+            translated_items,
+            api_key,
+            model="deepseek/deepseek-chat",
+            existing_glossary=existing_glossary
+        )
+        self.ai_extractor_thread.finished.connect(self._on_ai_extraction_finished)
+        self.ai_extractor_thread.error.connect(self._on_ai_extraction_error)
+        self.ai_extractor_thread.progress.connect(lambda msg: self.statusBar().showMessage(msg))
+        self.ai_extractor_thread.start()
+
     def _show_term_extraction_dialog(self, translated_items):
         """Show dialog to ask if user wants AI term extraction."""
         if not hasattr(self, 'translation_original_items') or not self.translation_original_items:
@@ -950,9 +1294,9 @@ class MainWindow(QMainWindow):
         
         # Ask user if they want AI extraction
         confirm = QMessageBox.question(
-            self, "用語抽出",
+            self, "辞書ツール",
             "AIを使用して用語（地名、アイテム名など）を抽出しますか？\n"
-            "抽出された用語は用語集に追加できます。\n\n"
+            "抽出された用語は辞書に追加できます。\n\n"
             "(DeepSeek APIを使用 - 安価)",
             QMessageBox.Yes | QMessageBox.No
         )
@@ -1001,7 +1345,7 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             added_count = dialog.get_added_count()
             if added_count > 0:
-                self.statusBar().showMessage(f"{added_count} 件の用語を用語集に追加しました", 5000)
+                self.statusBar().showMessage(f"{added_count} 件の用語を辞書に追加しました", 5000)
             else:
                 self.statusBar().showMessage("用語は追加されませんでした", 3000)
         else:
@@ -1104,8 +1448,13 @@ class MainWindow(QMainWindow):
             if is_existing_pack:
                 mod_data_list = list(self.loaded_mods.values())
                 integrated_count = 0
+                ftb_count = 0
                 
+                # 通常のMODを処理
                 for mod_data in mod_data_list:
+                    if mod_data.get("type") == "ftbquest":
+                        continue  # FTBクエストは後で処理
+                        
                     translations = mod_data["translations"]
                     if not translations:
                         continue
@@ -1133,7 +1482,30 @@ class MainWindow(QMainWindow):
                     integrated_count += 1
                     self.memory.update(translations)
                 
-                QMessageBox.information(self, "成功", f"既存リソースパックに {integrated_count} 個のMODの翻訳を統合しました:\n{parent_dir}")
+                # FTBクエストを処理
+                for path, mod_data in self.loaded_mods.items():
+                    if mod_data.get("type") != "ftbquest":
+                        continue
+                    
+                    translations = mod_data["translations"]
+                    if not translations:
+                        continue
+                    
+                    modpack_name = mod_data["name"].replace("[FTBクエスト] ", "")
+                    ftbquest_handler.export_ftbquest(
+                        path,
+                        parent_dir,
+                        modpack_name,
+                        translations
+                    )
+                    ftb_count += 1
+                    self.memory.update(translations)
+                
+                msg = f"既存リソースパックに統合しました:\n{parent_dir}\n"
+                msg += f"MOD: {integrated_count} 件"
+                if ftb_count > 0:
+                    msg += f"\nFTBクエスト: {ftb_count} 件"
+                QMessageBox.information(self, "成功", msg)
             else:
                 save_path = os.path.join(parent_dir, default_folder_name)
                 

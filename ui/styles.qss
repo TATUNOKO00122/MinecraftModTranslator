@@ -127,20 +127,20 @@ QCornerButton::section {
     border: 1px solid #555555;
 }
 
-/* ScrollBar - Square */
+/* ScrollBar - More Visible */
 QScrollBar:vertical {
     border: none;
     background: #2b2b2b;
-    width: 14px;
+    width: 16px;
     margin: 0px;
 }
 QScrollBar::handle:vertical {
-    background: #555555;
-    min-height: 20px;
+    background: #888888;
+    min-height: 30px;
     border-radius: 0px;
 }
 QScrollBar::handle:vertical:hover {
-    background: #666666;
+    background: #aaaaaa;
 }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0px;
@@ -148,16 +148,16 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
 QScrollBar:horizontal {
     border: none;
     background: #2b2b2b;
-    height: 14px;
+    height: 16px;
     margin: 0px;
 }
 QScrollBar::handle:horizontal {
-    background: #555555;
-    min-width: 20px;
+    background: #888888;
+    min-width: 30px;
     border-radius: 0px;
 }
 QScrollBar::handle:horizontal:hover {
-    background: #666666;
+    background: #aaaaaa;
 }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     width: 0px;

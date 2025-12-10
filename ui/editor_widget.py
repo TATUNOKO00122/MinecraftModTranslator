@@ -1,5 +1,6 @@
+import re
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
-                               QTableWidgetItem, QHeaderView, QLineEdit, QPushButton, QLabel)
+                               QTableWidgetItem, QHeaderView, QLineEdit, QPushButton, QLabel, QComboBox, QSizePolicy)
 from PySide6.QtGui import QColor, QBrush
 from PySide6.QtCore import Qt, Signal
 
@@ -9,25 +10,30 @@ class EditorWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         
-
-
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 15, 10, 10) # Added top margin (15) for breathing room
+        layout.setContentsMargins(10, 15, 10, 10) 
         
         # Toolbar
         toolbar = QHBoxLayout()
         
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("検索 (キー, 原文, 訳文)...")
+        self.search_input.setPlaceholderText("検索...")
+        self.search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.search_input.textChanged.connect(self.filter_table)
         toolbar.addWidget(self.search_input)
         
-        self.filter_btn = QPushButton("未翻訳のみ")
-        self.filter_btn.clicked.connect(self._cycle_filter)
-        toolbar.addWidget(self.filter_btn)
+        # Filter Combo
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItem("すべて表示", 0)
+        self.filter_combo.addItem("未翻訳のみ", 1)
+        self.filter_combo.addItem("原文と同じ", 2)
+        self.filter_combo.addItem("ローマ字あり", 3)
+        self.filter_combo.currentIndexChanged.connect(self.filter_table)
+        toolbar.addWidget(self.filter_combo)
         
-        # Filter state: 0=all, 1=missing, 2=same_as_original
-        self.filter_state = 0
+        self.extract_terms_btn = QPushButton("用語抽出")
+        self.extract_terms_btn.setToolTip("現在のリストから用語をAI抽出します")
+        toolbar.addWidget(self.extract_terms_btn)
         
         self.translate_btn = QPushButton("全体翻訳")
         toolbar.addWidget(self.translate_btn)
@@ -125,13 +131,9 @@ class EditorWidget(QWidget):
                 item.setBackground(brush)
                 item.setForeground(text_color)
 
-    def _cycle_filter(self):
-        """Cycle through filter states: all -> missing -> same_as_original -> all"""
-        self.filter_state = (self.filter_state + 1) % 3
-        self.filter_table()
-    
     def filter_table(self):
         filter_text = self.search_input.text().lower()
+        filter_state = self.filter_combo.currentData()
         
         # Block updates to prevent auto-scrolling
         self.table.setUpdatesEnabled(False)
@@ -147,23 +149,22 @@ class EditorWidget(QWidget):
             
             # Filter logic based on state
             match_filter = True
-            if self.filter_state == 1:  # Missing (untranslated)
+            if filter_state == 1:  # Missing (untranslated)
                 match_filter = not translation
-            elif self.filter_state == 2:  # Same as original
+            elif filter_state == 2:  # Same as original
                 match_filter = translation and translation == original
-                
+            elif filter_state == 3:  # Contains Roman letters (excluding color codes and placeholders)
+                # Remove Minecraft color codes (§ followed by a character)
+                text_without_codes = re.sub(r'§.', '', translation)
+                # Remove format placeholders (%s, %d, %1$s, %2$d, etc.)
+                text_without_codes = re.sub(r'%(\d+\$)?[sdfc]', '', text_without_codes)
+                # Check if any Roman letters remain
+                match_filter = bool(re.search(r'[A-Za-z]', text_without_codes))
+            
             self.table.setRowHidden(i, not (match_search and match_filter))
         
         # Re-enable updates
         self.table.setUpdatesEnabled(True)
-
-        # Update button text
-        if self.filter_state == 0:
-            self.filter_btn.setText("未翻訳のみ")
-        elif self.filter_state == 1:
-            self.filter_btn.setText("その他")
-        else:
-            self.filter_btn.setText("すべて表示")
 
     def get_translations(self):
         result = {}
@@ -209,8 +210,13 @@ class EditorWidget(QWidget):
         return result
 
     def get_missing_items(self):
+        """現在表示されている行の中から未翻訳の項目を取得"""
         missing = {}
         for i in range(self.table.rowCount()):
+            # 非表示行はスキップ（フィルター適用後の表示行のみを対象）
+            if self.table.isRowHidden(i):
+                continue
+                
             key = self.table.item(i, 0).text()
             original = self.table.item(i, 1).text()
             translation = self.table.item(i, 2).text().strip()
@@ -218,3 +224,17 @@ class EditorWidget(QWidget):
             if not translation:
                 missing[key] = original
         return missing
+    
+    def get_visible_items(self):
+        """現在表示されている全ての行を取得（翻訳済み含む）"""
+        visible = {}
+        for i in range(self.table.rowCount()):
+            # 非表示行はスキップ
+            if self.table.isRowHidden(i):
+                continue
+                
+            key = self.table.item(i, 0).text()
+            original = self.table.item(i, 1).text()
+            if original:
+                visible[key] = original
+        return visible

@@ -31,7 +31,7 @@ class TermExtractionDialog(QDialog):
         # Header
         header_label = QLabel(
             f"翻訳から {len(self.extracted_terms)} 件の用語が抽出されました。\n"
-            "用語集に追加する項目にチェックを入れてください。"
+            "辞書に追加する項目にチェックを入れてください。"
         )
         header_label.setStyleSheet("font-size: 12px; margin-bottom: 10px;")
         layout.addWidget(header_label)
@@ -91,7 +91,7 @@ class TermExtractionDialog(QDialog):
         # Action buttons
         btn_layout = QHBoxLayout()
         
-        add_btn = QPushButton("選択した用語を追加")
+        add_btn = QPushButton("選択した用語を辞書に追加")
         add_btn.clicked.connect(self._add_selected)
         add_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px 16px;")
         btn_layout.addWidget(add_btn)

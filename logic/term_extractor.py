@@ -157,28 +157,50 @@ class AITermExtractorThread(QThread):
             for key, original in self.original_items.items():
                 if key in self.translated_items:
                     translated = self.translated_items[key]
-                    pairs_to_analyze.append({
-                        "original": str(original),
-                        "translated": str(translated)
-                    })
+                    # Only calculate/add if translation differs and has content
+                    if original and translated and str(original) != str(translated):
+                        pairs_to_analyze.append({
+                            "original": str(original),
+                            "translated": str(translated)
+                        })
             
             if not pairs_to_analyze:
                 self.finished.emit({})
                 return
             
-            # Limit to avoid token limits (take first 50 pairs max)
-            pairs_to_analyze = pairs_to_analyze[:50]
+            # Batch processing
+            batch_size = 20 # User requested specific batch size
+            total_batches = (len(pairs_to_analyze) + batch_size - 1) // batch_size
+            all_extracted = {}
             
-            self.progress.emit(f"AIで用語を抽出中... ({len(pairs_to_analyze)} 件)")
+            import time
             
-            # Call AI to extract terms
-            extracted = self._call_ai_for_extraction(pairs_to_analyze)
+            for i in range(0, len(pairs_to_analyze), batch_size):
+                if not self.is_running:
+                    break
+                    
+                batch = pairs_to_analyze[i:i+batch_size]
+                current_batch_num = (i // batch_size) + 1
+                
+                self.progress.emit(f"AIで用語を抽出中... (バッチ {current_batch_num}/{total_batches})")
+                
+                try:
+                    # Call AI to extract terms
+                    extracted = self._call_ai_for_extraction(batch)
+                    
+                    # Merge results
+                    for k, v in extracted.items():
+                        if k not in self.existing_glossary:
+                            all_extracted[k] = v
+                            
+                except Exception as e:
+                    print(f"Batch {current_batch_num} extraction failed: {e}")
+                    # Continue to next batch even if one fails
+                
+                # Small delay to respect rate limits
+                time.sleep(1.0)
             
-            # Filter out existing glossary terms
-            filtered = {k: v for k, v in extracted.items() 
-                       if k not in self.existing_glossary}
-            
-            self.finished.emit(filtered)
+            self.finished.emit(all_extracted)
             
         except Exception as e:
             self.error.emit(str(e))
