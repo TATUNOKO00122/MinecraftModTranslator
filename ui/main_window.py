@@ -83,10 +83,13 @@ class MainWindow(QMainWindow):
         export_action.triggered.connect(self.export_resource_pack)
         self.toolbar.addAction(export_action)
 
-        self.apply_snbt_action = QAction("SNBT適用", self)
-        self.apply_snbt_action.triggered.connect(self.apply_ftbquest_snbt)
-        self.apply_snbt_action.setVisible(False)  # Hidden until FTB Quest is loaded
-        self.toolbar.addAction(self.apply_snbt_action)
+        # SNBT Apply Button (using QToolButton for styling)
+        from PySide6.QtWidgets import QToolButton
+        self.apply_snbt_btn = QToolButton()
+        self.apply_snbt_btn.setText("SNBT適用")
+        self.apply_snbt_btn.clicked.connect(self.apply_ftbquest_snbt)
+        self.apply_snbt_btn.setVisible(False)  # Hidden until FTB Quest is loaded
+        self.toolbar.addWidget(self.apply_snbt_btn)
 
         # Splitter Layout
         splitter = QSplitter(Qt.Horizontal)
@@ -103,7 +106,7 @@ class MainWindow(QMainWindow):
         self.mod_filter.addItem("すべて", "all")
         self.mod_filter.addItem("未翻訳", "incomplete")
         self.mod_filter.addItem("翻訳済み", "complete")
-        self.mod_filter.addItem("その他あり", "has_same")
+        self.mod_filter.addItem("原文と同じ", "has_same")
         self.mod_filter.addItem("ローマ字あり", "has_roman")
         self.mod_filter.addItem("FTBクエスト", "ftbquest")
         self.mod_filter.addItem("MODのみ", "mod")
@@ -112,7 +115,7 @@ class MainWindow(QMainWindow):
         
         # Batch translate button
         from PySide6.QtWidgets import QPushButton
-        self.batch_translate_btn = QPushButton("表示MOD一括翻訳")
+        self.batch_translate_btn = QPushButton("一括翻訳")
         self.batch_translate_btn.setToolTip("フィルター後の表示MODを順番に翻訳します")
         self.batch_translate_btn.clicked.connect(self.start_batch_translate_all_mods)
         left_layout.addWidget(self.batch_translate_btn)
@@ -146,10 +149,38 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(1, 4) # Make editor wider
 
-        # Progress Bar
+        # Progress Bar and Stop Button
+        from PySide6.QtWidgets import QPushButton
+        progress_layout = QHBoxLayout()
+        progress_layout.setContentsMargins(4, 4, 4, 4)
+        
         self.progress_bar = QProgressBar()
         self.progress_bar.hide()
-        main_layout.addWidget(self.progress_bar)
+        progress_layout.addWidget(self.progress_bar)
+        
+        self.stop_translation_btn = QPushButton("中断")
+        self.stop_translation_btn.setFixedWidth(80)
+        self.stop_translation_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #dc2626;
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #b91c1c;
+            }
+            QPushButton:pressed {
+                background-color: #991b1b;
+            }
+        """)
+        self.stop_translation_btn.clicked.connect(self.stop_translation)
+        self.stop_translation_btn.hide()
+        progress_layout.addWidget(self.stop_translation_btn)
+        
+        main_layout.addLayout(progress_layout)
 
     def _check_previous_session(self):
         """Check if there's a previous session and ask to restore"""
@@ -199,24 +230,6 @@ class MainWindow(QMainWindow):
         """Save session on close"""
         if self.current_mod_path:
             self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
-        
-        # Check for unapplied FTB Quest SNBT
-        unapplied_ftb = [data["name"] for path, data in self.loaded_mods.items() 
-                         if data.get("type") == "ftbquest" and not data.get("snbt_applied", True)]
-        
-        if unapplied_ftb:
-            confirm = QMessageBox.warning(
-                self, "⚠️ SNBT未適用",
-                f"以下のFTBクエストでSNBT適用がされていません:\n\n"
-                f"{''.join('• ' + name + chr(10) for name in unapplied_ftb)}\n"
-                "SNBT適用を行わないと、ゲーム内のクエストに翻訳が反映されません。\n\n"
-                "本当に終了しますか？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
-            if confirm != QMessageBox.Yes:
-                event.ignore()
-                return
         
         self._save_session()
         event.accept()
@@ -370,6 +383,42 @@ class MainWindow(QMainWindow):
             elif filter_type == "mod":
                 is_ftb = mod_data.get("type") == "ftbquest"
                 item.setHidden(is_ftb)
+
+    def _check_snbt_applied(self, quests_folder):
+        """Check if SNBT has already been applied by looking for backup files."""
+        import os
+        # Look for .snbt.bak files in the quests folder
+        for root, dirs, files in os.walk(quests_folder):
+            for f in files:
+                if f.endswith('.snbt.bak'):
+                    return True
+        return False
+
+    def _update_snbt_button_style(self):
+        """Update SNBT button style based on whether there are unapplied quests."""
+        unapplied = any(
+            data.get("type") == "ftbquest" and not data.get("snbt_applied", True)
+            for data in self.loaded_mods.values()
+        )
+        
+        if unapplied:
+            # Red border warning style
+            self.apply_snbt_btn.setStyleSheet("""
+                QToolButton {
+                    border: 2px solid #ff4444;
+                    background-color: #442222;
+                    color: #ffaaaa;
+                    padding: 4px 8px;
+                }
+                QToolButton:hover {
+                    background-color: #553333;
+                }
+            """)
+            self.apply_snbt_btn.setToolTip("⚠️ 未適用のクエストがあります！クリックして適用してください。")
+        else:
+            # Normal style
+            self.apply_snbt_btn.setStyleSheet("")
+            self.apply_snbt_btn.setToolTip("FTBクエストのSNBTファイルに翻訳を適用します")
 
     # --- Context Menu ---
     def show_context_menu(self, pos):
@@ -626,10 +675,13 @@ class MainWindow(QMainWindow):
             
             self.mod_list.addItem(item)
             
+            # Check if SNBT is already applied by looking for backup files
+            snbt_already_applied = self._check_snbt_applied(quests_folder)
+            self.loaded_mods[quests_folder]["snbt_applied"] = snbt_already_applied
+            
             # Show SNBT apply button when FTB Quest is loaded
-            self.apply_snbt_action.setVisible(True)
-            # Mark as not yet applied
-            self.loaded_mods[quests_folder]["snbt_applied"] = False
+            self.apply_snbt_btn.setVisible(True)
+            self._update_snbt_button_style()
             
             if self.mod_list.count() == 1:
                 self.mod_list.setCurrentItem(item)
@@ -878,10 +930,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, len(items))
         self.progress_bar.setValue(0)
         self.progress_bar.show()
+        self.stop_translation_btn.show()  # Show stop button
         self.toolbar.setEnabled(False)
-        self.editor.setEnabled(False)
-        self.mod_list.setEnabled(False)
-
         self.editor.setEnabled(False)
         self.mod_list.setEnabled(False)
 
@@ -893,6 +943,7 @@ class MainWindow(QMainWindow):
         self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms)
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self.on_translate_finished)
+        self.translator_thread.stopped.connect(self.on_translate_stopped)  # Handle stop
         self.translator_thread.error.connect(self.on_translation_error)
         self.translator_thread.start()
 
@@ -921,6 +972,44 @@ class MainWindow(QMainWindow):
 
     def on_translation_error(self, message):
         self.translation_errors.append(message)
+
+    def stop_translation(self):
+        """Stop the current translation process."""
+        if hasattr(self, 'translator_thread') and self.translator_thread and self.translator_thread.isRunning():
+            self.translator_thread.stop()
+            self.stop_translation_btn.setEnabled(False)
+            self.stop_translation_btn.setText("中断中...")
+            self.statusBar().showMessage("翻訳を中断しています...")
+
+    def on_translate_stopped(self, partial_results):
+        """Handle translation stopped with partial results."""
+        # Apply partial results to editor
+        if partial_results:
+            self.editor.update_translations(partial_results)
+            
+            # Update memory immediately
+            if self.current_mod_path:
+                self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
+
+        # Reset UI
+        self.progress_bar.hide()
+        self.stop_translation_btn.hide()
+        self.stop_translation_btn.setEnabled(True)
+        self.stop_translation_btn.setText("中断")
+        self.toolbar.setEnabled(True)
+        self.editor.setEnabled(True)
+        self.mod_list.setEnabled(True)
+        
+        # Show message
+        if partial_results:
+            QMessageBox.information(self, "中断", 
+                f"翻訳を中断しました。\n{len(partial_results)} 件の翻訳は保存されました。")
+        else:
+            QMessageBox.information(self, "中断", "翻訳を中断しました。")
+        
+        self.translator_thread = None
+        self.translation_original_items = None
+        self.statusBar().showMessage("翻訳が中断されました", 3000)
 
     def start_auto_translate_all(self):
         if not self.current_mod_path: return
@@ -1052,6 +1141,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setRange(0, len(items))
         self.progress_bar.setValue(0)
         self.progress_bar.show()
+        self.stop_translation_btn.show()  # Show stop button
         self.toolbar.setEnabled(False)
         self.editor.setEnabled(False)
         self.mod_list.setEnabled(False)
@@ -1066,6 +1156,7 @@ class MainWindow(QMainWindow):
         self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms)
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self._on_batch_translate_finished)
+        self.translator_thread.stopped.connect(self._on_batch_translate_stopped)  # Handle stop
         self.translator_thread.error.connect(self.on_translation_error)
         self.translator_thread.start()
 
@@ -1085,6 +1176,7 @@ class MainWindow(QMainWindow):
             self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
         
         self.progress_bar.hide()
+        self.stop_translation_btn.hide()  # Hide stop button
         self.toolbar.setEnabled(True)
         self.editor.setEnabled(True)
         self.mod_list.setEnabled(True)
@@ -1111,6 +1203,49 @@ class MainWindow(QMainWindow):
         self._batch_translate_all_items = None
         self.translator_thread = None
         self.translation_original_items = None
+
+    def _on_batch_translate_stopped(self, partial_results):
+        """Handle batch translation stopped with partial results."""
+        # Distribute partial results back to each MOD
+        if partial_results and hasattr(self, '_batch_translate_mod_paths') and self._batch_translate_mod_paths:
+            for mod_path in self._batch_translate_mod_paths:
+                mod_data = self.loaded_mods[mod_path]
+                original = mod_data["original"]
+                
+                for key in original.keys():
+                    if key in partial_results:
+                        mod_data["translations"][key] = partial_results[key]
+            
+            # Update current editor if it's one of the translated MODs
+            if self.current_mod_path in self._batch_translate_mod_paths:
+                self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
+
+        # Reset UI
+        self.progress_bar.hide()
+        self.stop_translation_btn.hide()
+        self.stop_translation_btn.setEnabled(True)
+        self.stop_translation_btn.setText("中断")
+        self.toolbar.setEnabled(True)
+        self.editor.setEnabled(True)
+        self.mod_list.setEnabled(True)
+        self.batch_translate_btn.setEnabled(True)
+        
+        self.refresh_all_mod_colors()
+        
+        # Show message
+        if partial_results:
+            QMessageBox.information(self, "中断", 
+                f"一括翻訳を中断しました。\n{len(partial_results)} 件の翻訳は保存されました。")
+        else:
+            QMessageBox.information(self, "中断", "一括翻訳を中断しました。")
+        
+        # Cleanup
+        self._batch_translate_mod_paths = None
+        self._batch_translate_mod_item_counts = None
+        self._batch_translate_all_items = None
+        self.translator_thread = None
+        self.translation_original_items = None
+        self.statusBar().showMessage("一括翻訳が中断されました", 3000)
 
 
     def start_manual_term_extraction(self):
@@ -1164,6 +1299,7 @@ class MainWindow(QMainWindow):
              self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
 
         self.progress_bar.hide()
+        self.stop_translation_btn.hide()  # Hide stop button
         self.toolbar.setEnabled(True)
         self.editor.setEnabled(True)
         self.mod_list.setEnabled(True)
@@ -1587,6 +1723,9 @@ class MainWindow(QMainWindow):
                 
                 # Mark as applied
                 ftb_data["snbt_applied"] = True
+            
+            # Update button style (remove warning)
+            self._update_snbt_button_style()
             
             QMessageBox.information(
                 self, "SNBT適用完了",
