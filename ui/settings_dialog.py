@@ -1,12 +1,13 @@
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QLineEdit, 
-                               QComboBox, QPushButton, QHBoxLayout, QFileDialog)
+                               QComboBox, QPushButton, QHBoxLayout, QFileDialog,
+                               QSpinBox, QGroupBox, QFormLayout)
 from PySide6.QtCore import QSettings
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("設定")
-        self.setFixedWidth(400)
+        self.setFixedWidth(450)
         
         self.settings = QSettings("MinecraftModTranslator", "App")
         
@@ -43,6 +44,32 @@ class SettingsDialog(QDialog):
         if index >= 0:
             self.model_combo.setCurrentIndex(index)
         layout.addWidget(self.model_combo)
+        
+        layout.addSpacing(10)
+        
+        # Performance Settings Group
+        perf_group = QGroupBox("パフォーマンス設定")
+        perf_layout = QFormLayout()
+        
+        # Parallel Count
+        self.parallel_spin = QSpinBox()
+        self.parallel_spin.setRange(1, 10)
+        self.parallel_spin.setValue(int(self.settings.value("parallel_count", 3)))
+        self.parallel_spin.setToolTip(
+            "同時に送信するAPIリクエスト数。\n"
+            "高い値: 翻訳速度が向上しますが、レート制限に注意。\n"
+            "低い値: 安定しますが、翻訳速度は遅くなります。\n"
+            "無料モデル使用時は1〜2を推奨。"
+        )
+        perf_layout.addRow("並列リクエスト数:", self.parallel_spin)
+        
+        # Help text
+        help_label = QLabel("※ 無料モデル: 1〜2推奨 / 有料モデル: 3〜5推奨")
+        help_label.setStyleSheet("color: #888; font-size: 11px;")
+        perf_layout.addRow("", help_label)
+        
+        perf_group.setLayout(perf_layout)
+        layout.addWidget(perf_group)
         
         layout.addSpacing(10)
 
@@ -84,11 +111,13 @@ class SettingsDialog(QDialog):
         self.settings.setValue("api_key", self.api_key_input.text())
         self.settings.setValue("model", self.model_combo.currentData())
         self.settings.setValue("export_dir", self.export_dir_input.text())
+        self.settings.setValue("parallel_count", self.parallel_spin.value())
         self.accept()
 
     def get_settings(self):
         return {
             "api_key": self.api_key_input.text(),
             "model": self.model_combo.currentData(),
-            "export_dir": self.export_dir_input.text()
+            "export_dir": self.export_dir_input.text(),
+            "parallel_count": self.parallel_spin.value()
         }

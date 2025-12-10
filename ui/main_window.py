@@ -132,7 +132,7 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0,0,0,0)
 
         # Status Label
-        self.mod_label = QLabel("MODファイル (.jar / .zip) をドラッグ＆ドロップしてください")
+        self.mod_label = QLabel("MODファイルまたはMinecraftディレクトリをドラッグ＆ドロップしてください")
         self.mod_label.setAlignment(Qt.AlignCenter)
         self.mod_label.setStyleSheet("font-size: 16px; color: #94a3b8; padding: 20px;")
         right_layout.addWidget(self.mod_label)
@@ -819,27 +819,29 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "エラー", f"リソースパック読込に失敗: {e}")
 
     def open_file_dialog(self):
+        # Ask user what to open
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("開く")
-        msg_box.setText("読み込み形式を選択")
-        btn_file = msg_box.addButton("ファイル (ZIP/JAR)", QMessageBox.AcceptRole)
-        btn_folder = msg_box.addButton("フォルダ", QMessageBox.ActionRole)
+        msg_box.setText("何を開きますか？")
+        btn_file = msg_box.addButton("MODファイル", QMessageBox.AcceptRole)
+        btn_folder = msg_box.addButton("Minecraftディレクトリ", QMessageBox.ActionRole)
         msg_box.addButton("キャンセル", QMessageBox.RejectRole)
         msg_box.exec()
         
-        paths = []
         if msg_box.clickedButton() == btn_file:
-            file_paths, _ = QFileDialog.getOpenFileNames(self, "ファイルを開く", "", "Zip/Jar Files (*.zip *.jar)")
-            paths = file_paths
+            # Native file dialog for MOD files
+            file_paths, _ = QFileDialog.getOpenFileNames(
+                self, "MODファイルを開く", "", "MODファイル (*.zip *.jar);;すべてのファイル (*)"
+            )
+            for path in file_paths:
+                self.process_path(path)
         elif msg_box.clickedButton() == btn_folder:
-            folder_path = QFileDialog.getExistingDirectory(self, "フォルダを開く")
+            # Native folder dialog for Minecraft directory
+            folder_path = QFileDialog.getExistingDirectory(
+                self, "Minecraftディレクトリを開く"
+            )
             if folder_path:
-                paths = [folder_path]
-        else:
-            return
-        
-        for path in paths:
-            self.process_path(path)
+                self.process_path(folder_path)
 
     def load_source(self, path):
         if path in self.loaded_mods:
@@ -936,18 +938,23 @@ class MainWindow(QMainWindow):
         self.mod_list.setEnabled(False)
 
         glossary_terms = self.glossary.get_terms()
+        parallel_count = settings.get("parallel_count", 3)
         self.translation_errors = [] # Reset errors
         self.translation_start_time = None
         self.translation_total_items = len(items)
         self.translation_original_items = items.copy()  # Store original items for term extraction
-        self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms)
+        self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms, parallel_count)
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self.on_translate_finished)
         self.translator_thread.stopped.connect(self.on_translate_stopped)  # Handle stop
         self.translator_thread.error.connect(self.on_translation_error)
         self.translator_thread.start()
+        
+        # Show immediate feedback
+        self.statusBar().showMessage(f"翻訳中... 0/{len(items)} (APIリクエスト中...)")
+        QApplication.processEvents()
 
-    def on_translation_progress(self, value):
+    def on_translation_progress(self, value, total=None):
         import time
         
         if self.translation_start_time is None:
@@ -969,6 +976,9 @@ class MainWindow(QMainWindow):
                 eta_str = f"{eta_seconds}秒"
             
             self.statusBar().showMessage(f"翻訳中... {value}/{self.translation_total_items} (残り約 {eta_str})")
+        
+        # Force UI update
+        QApplication.processEvents()
 
     def on_translation_error(self, message):
         self.translation_errors.append(message)
@@ -1148,17 +1158,22 @@ class MainWindow(QMainWindow):
         self.batch_translate_btn.setEnabled(False)
 
         glossary_terms = self.glossary.get_terms()
+        parallel_count = settings.get("parallel_count", 3)
         self.translation_errors = []
         self.translation_start_time = None
         self.translation_total_items = len(items)
         self.translation_original_items = items.copy()
         
-        self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms)
+        self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms, parallel_count)
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self._on_batch_translate_finished)
         self.translator_thread.stopped.connect(self._on_batch_translate_stopped)  # Handle stop
         self.translator_thread.error.connect(self.on_translation_error)
         self.translator_thread.start()
+        
+        # Show immediate feedback
+        self.statusBar().showMessage(f"翻訳中... 0/{len(items)} (APIリクエスト中...)")
+        QApplication.processEvents()
 
     def _on_batch_translate_finished(self, results):
         """Handle batch translation completion."""
@@ -1611,9 +1626,12 @@ class MainWindow(QMainWindow):
                     
                     existing_data.update(translations)
                     
+                    # Normalize escapes before saving
+                    normalized = self.file_handler._normalize_translations(existing_data)
+                    
                     os.makedirs(output_dir, exist_ok=True)
                     with open(output_path, 'w', encoding='utf-8') as f:
-                        json.dump(existing_data, f, ensure_ascii=False, indent=2)
+                        json.dump(normalized, f, ensure_ascii=False, indent=2)
                     
                     integrated_count += 1
                     self.memory.update(translations)

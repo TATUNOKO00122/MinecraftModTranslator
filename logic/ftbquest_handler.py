@@ -231,7 +231,9 @@ def export_ftbquest(quests_folder, output_folder, modpack_name, translations):
     
     for key, value in translations.items():
         if value:
-            lang_dict[key] = value
+            # Normalize escaped quotes before saving
+            normalized_value = value.replace('\\"', '"').replace('\\\"', '"')
+            lang_dict[key] = normalized_value
     
     ja_jp_path = os.path.join(lang_output, "ja_jp.json")
     with open(ja_jp_path, 'w', encoding='utf-8') as f:

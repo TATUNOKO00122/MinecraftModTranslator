@@ -1,8 +1,28 @@
 import zipfile
 import json
 import os
+import re
 
 class FileHandler:
+    def _normalize_escapes(self, text):
+        """Fix escaped characters that should be plain in final output.
+        
+        In the editor, user sees: \"プロローグ\" (backslash + quote)
+        This should become just: "プロローグ" (plain quotes)
+        """
+        if not isinstance(text, str):
+            return text
+        # Replace literal backslash+quote with just quote
+        # In Python: '\\\"' represents the 2-character sequence: \ and "
+        result = text.replace('\\\"', '"')
+        # Also handle the case where it's just backslash before quote
+        result = result.replace('\\"', '"')
+        return result
+    
+    def _normalize_translations(self, translations):
+        """Normalize all translation values to fix double escapes."""
+        return {k: self._normalize_escapes(v) for k, v in translations.items()}
+    
     def load_zip(self, file_path):
         """
         Loads a zip/jar file and finds translation files.
@@ -121,8 +141,10 @@ class FileHandler:
         full_target_path = os.path.join(output_path, target_path)
         os.makedirs(os.path.dirname(full_target_path), exist_ok=True)
         
+        # Normalize escapes before saving
+        normalized = self._normalize_translations(translations)
         with open(full_target_path, 'w', encoding='utf-8') as f:
-            json.dump(translations, f, indent=2, ensure_ascii=False)
+            json.dump(normalized, f, indent=2, ensure_ascii=False)
 
     def save_merged_resource_pack(self, output_path, mod_data_list):
         """
@@ -152,5 +174,7 @@ class FileHandler:
             full_target_path = os.path.join(output_path, target_path)
             os.makedirs(os.path.dirname(full_target_path), exist_ok=True)
             
+            # Normalize escapes before saving
+            normalized = self._normalize_translations(translations)
             with open(full_target_path, 'w', encoding='utf-8') as f:
-                json.dump(translations, f, indent=2, ensure_ascii=False)
+                json.dump(normalized, f, indent=2, ensure_ascii=False)

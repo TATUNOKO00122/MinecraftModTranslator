@@ -78,7 +78,7 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0,0,0,0)
 
         # Status Label
-        self.mod_label = QLabel("MODファイル (.jar / .zip) をドラッグ＆ドロップしてください")
+        self.mod_label = QLabel("MODファイルまたはMinecraftディレクトリをドラッグ＆ドロップしてください")
         self.mod_label.setAlignment(Qt.AlignCenter)
         self.mod_label.setStyleSheet("font-size: 16px; color: #94a3b8; padding: 20px;")
         right_layout.addWidget(self.mod_label)

@@ -1,54 +1,170 @@
 import requests
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from PySide6.QtCore import QThread, Signal
 
 class TranslatorThread(QThread):
     progress = Signal(int, int) # current, total
     finished = Signal(dict)
+    stopped = Signal(dict)  # Emitted when stopped with partial results
     error = Signal(str)
 
-    def __init__(self, items, api_key, model, glossary=None):
+    def __init__(self, items, api_key, model, glossary=None, parallel_count=3):
         super().__init__()
         self.items = items # dict of key: source
         self.api_key = api_key
         self.model = model
         self.glossary = glossary or {}
         self.is_running = True
-        self.batch_size = 20 # Reduced from 50 to avoid timeouts/rate limits
+        self._partial_results = {}  # Store partial results for stop
+        # Dynamic batch sizing: target ~4000 characters per batch
+        self.target_batch_chars = 4000
+        self.min_batch_size = 5    # Minimum items per batch
+        self.max_batch_size = 150  # Maximum items per batch
+        # Parallel processing settings
+        self.parallel_count = max(1, min(parallel_count, 10))  # Clamp between 1-10
+        self._rate_limit_hit = False  # Flag for adaptive throttling
+
+    def _create_batches(self, items):
+        """Create batches based on character count, not fixed item count."""
+        batches = []
+        current_batch = {}
+        current_chars = 0
+        
+        for key, text in items.items():
+            text_len = len(str(text)) if text else 0
+            
+            # If adding this item would exceed target and we have items, start new batch
+            if current_chars + text_len > self.target_batch_chars and len(current_batch) >= self.min_batch_size:
+                batches.append(current_batch)
+                current_batch = {}
+                current_chars = 0
+            
+            current_batch[key] = text
+            current_chars += text_len
+            
+            # Force new batch if max size reached
+            if len(current_batch) >= self.max_batch_size:
+                batches.append(current_batch)
+                current_batch = {}
+                current_chars = 0
+        
+        # Add remaining items
+        if current_batch:
+            batches.append(current_batch)
+        
+        return batches
 
     def run(self):
         results = {}
-        keys = list(self.items.keys())
-        total = len(keys)
         
-        # Split into batches
-        for i in range(0, total, self.batch_size):
-            if not self.is_running:
-                break
+        # Create dynamic batches based on character count
+        batches = self._create_batches(self.items)
+        total_items = len(self.items)
+        processed = 0
+        
+        if self.parallel_count == 1:
+            # Sequential processing (original behavior)
+            for batch_idx, batch_items in enumerate(batches):
+                if not self.is_running:
+                    self.stopped.emit(results)
+                    return
                 
-            batch_keys = keys[i:i+self.batch_size]
-            batch_items = {k: self.items[k] for k in batch_keys}
-            
-            try:
-                translated_batch = self.translate_batch_with_retry(batch_items)
-                results.update(translated_batch)
-            except Exception as e:
-                print(f"Batch failed: {e}")
-                self.error.emit(f"Batch failed: {e}")
-                # Fallback removed as per user request
-                # Failed items will simply not be in 'results', remaining untranslated in UI
-            
-            self.progress.emit(min(i + self.batch_size, total), total)
-            
-            # Increased delay to be safer against rate limits
-            time.sleep(1.0) 
+                try:
+                    translated_batch = self.translate_batch_with_retry(batch_items)
+                    results.update(translated_batch)
+                    self._partial_results = results.copy()
+                except Exception as e:
+                    print(f"Batch {batch_idx + 1} failed: {e}")
+                    self.error.emit(f"Batch {batch_idx + 1} failed: {e}")
+                
+                if not self.is_running:
+                    self.stopped.emit(results)
+                    return
+                
+                processed += len(batch_items)
+                self.progress.emit(processed, total_items)
+                time.sleep(0.5)
+        else:
+            # Parallel processing with ThreadPoolExecutor
+            self._run_parallel(batches, results, total_items)
+            if not self.is_running:
+                self.stopped.emit(results)
+                return
 
         self.finished.emit(results)
+
+    def _run_parallel(self, batches, results, total_items):
+        """Execute batches in parallel using ThreadPoolExecutor."""
+        processed = 0
+        current_parallel = self.parallel_count
+        
+        # Process batches in chunks of parallel_count
+        batch_index = 0
+        while batch_index < len(batches):
+            if not self.is_running:
+                return
+            
+            # Get next chunk of batches to process in parallel
+            chunk_end = min(batch_index + current_parallel, len(batches))
+            batch_chunk = [(i, batches[i]) for i in range(batch_index, chunk_end)]
+            
+            with ThreadPoolExecutor(max_workers=current_parallel) as executor:
+                # Submit all batches in the chunk
+                future_to_batch = {
+                    executor.submit(self._translate_batch_safe, idx, batch_items): (idx, batch_items)
+                    for idx, batch_items in batch_chunk
+                }
+                
+                # Collect results as they complete
+                for future in as_completed(future_to_batch):
+                    if not self.is_running:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        return
+                    
+                    idx, batch_items = future_to_batch[future]
+                    try:
+                        translated_batch, rate_limited = future.result()
+                        if translated_batch:
+                            results.update(translated_batch)
+                            self._partial_results = results.copy()
+                        
+                        # Adaptive throttling: reduce parallel count on rate limit
+                        if rate_limited and current_parallel > 1:
+                            current_parallel = max(1, current_parallel - 1)
+                            print(f"Rate limit hit, reducing parallel count to {current_parallel}")
+                            
+                    except Exception as e:
+                        print(f"Batch {idx + 1} failed: {e}")
+                        self.error.emit(f"Batch {idx + 1} failed: {e}")
+                    
+                    processed += len(batch_items)
+                    self.progress.emit(processed, total_items)
+            
+            batch_index = chunk_end
+            
+            # Short delay between parallel chunks to avoid rate limiting
+            if batch_index < len(batches):
+                time.sleep(0.3)
+    
+    def _translate_batch_safe(self, batch_idx, items):
+        """Thread-safe wrapper for translate_batch_with_retry.
+        Returns tuple of (results, rate_limited_flag)."""
+        rate_limited = False
+        try:
+            result = self.translate_batch_with_retry(items)
+            return result, rate_limited
+        except Exception as e:
+            if "429" in str(e):
+                rate_limited = True
+            raise
 
     def translate_batch_with_retry(self, items, max_retries=3):
         retries = 0
         while retries < max_retries:
+            if not self.is_running:
+                return {}
             try:
                 return self.translate_batch(items)
             except requests.exceptions.HTTPError as e:
@@ -60,15 +176,17 @@ class TranslatorThread(QThread):
                 else:
                     raise Exception(f"HTTP {e.response.status_code}: {e}")
             except Exception as e:
-                # Other errors, maybe retry once?
                 print(f"Error during translation: {e}")
-                retries += 1 # Retry strict network errors too
+                retries += 1
                 time.sleep(1)
                 
         raise Exception("Max retries exceeded")
 
     def translate_batch(self, items):
         if not items:
+            return {}
+        
+        if not self.is_running:
             return {}
             
         url = "https://openrouter.ai/api/v1/chat/completions"
@@ -79,7 +197,6 @@ class TranslatorThread(QThread):
         }
         
         # Prepare content as JSON
-        # We ask LLM to translate values in the JSON object
         prompt_content = json.dumps(items, ensure_ascii=False)
         
         system_content = (
@@ -107,8 +224,6 @@ class TranslatorThread(QThread):
 
         if self.glossary:
             # OPTIMIZATION: Only include glossary terms that appear in the source text
-            # This reduces token usage and noise
-            # Ensure all values are strings before join (handle numbers etc)
             batch_text_lower = " ".join([str(v) for v in items.values()]).lower()
             relevant_terms = {k: v for k, v in self.glossary.items() if k.lower() in batch_text_lower}
             
@@ -128,10 +243,9 @@ class TranslatorThread(QThread):
                     "content": f"Translate the following values to Japanese:\n\n{prompt_content}"
                 }
             ],
-            # "response_format": { "type": "json_object" } # Not all openrouter models support this, so safe to prompt engineering
         }
         
-        response = requests.post(url, headers=headers, json=data)
+        response = requests.post(url, headers=headers, json=data, timeout=120)
         response.raise_for_status()
         
         result_json = response.json()

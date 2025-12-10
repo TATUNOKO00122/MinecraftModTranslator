@@ -35,7 +35,7 @@ class EditorWidget(QWidget):
         self.extract_terms_btn.setToolTip("現在のリストから用語をAI抽出します")
         toolbar.addWidget(self.extract_terms_btn)
         
-        self.translate_btn = QPushButton("全体翻訳")
+        self.translate_btn = QPushButton("一括翻訳")
         toolbar.addWidget(self.translate_btn)
         
         layout.addLayout(toolbar)
