@@ -79,7 +79,7 @@ class MainWindow(QMainWindow):
         dictionary_action.triggered.connect(self.open_glossary)
         self.toolbar.addAction(dictionary_action)
         
-        export_action = QAction("パック作成", self)
+        export_action = QAction("リソースパック作成", self)
         export_action.triggered.connect(self.export_resource_pack)
         self.toolbar.addAction(export_action)
 
