@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, Signal
 
 class EditorWidget(QWidget):
     translationChanged = Signal(int, int) # translated_count, total_count
+    searchAllModsRequested = Signal(str)  # search_text
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -21,6 +22,12 @@ class EditorWidget(QWidget):
         self.search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.search_input.textChanged.connect(self.filter_table)
         toolbar.addWidget(self.search_input)
+        
+        # All MODs search button
+        self.search_all_mods_btn = QPushButton("全MOD検索")
+        self.search_all_mods_btn.setToolTip("検索語が含まれるMODのみを一覧に表示します")
+        self.search_all_mods_btn.clicked.connect(self._on_search_all_mods_clicked)
+        toolbar.addWidget(self.search_all_mods_btn)
         
         # Filter Combo
         self.filter_combo = QComboBox()
@@ -238,3 +245,8 @@ class EditorWidget(QWidget):
             if original:
                 visible[key] = original
         return visible
+    
+    def _on_search_all_mods_clicked(self):
+        """全MOD検索ボタンがクリックされたときにシグナルを発行"""
+        search_text = self.search_input.text()
+        self.searchAllModsRequested.emit(search_text)

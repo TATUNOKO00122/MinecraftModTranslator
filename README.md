@@ -11,6 +11,12 @@
 
 ---
 
+## スクリーンショット
+
+![アプリケーション画面](screenshot.png)
+
+---
+
 ## 概要
 
 MinecraftModTranslatorは、Minecraft MODやModpackの翻訳作業を効率化するためのGUIツールです。

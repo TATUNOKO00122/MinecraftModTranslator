@@ -37,6 +37,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Minecraft MOD 翻訳ツール")
         self.resize(1200, 800)
         self.setAcceptDrops(True)
+        
+        # Set window icon
+        from PySide6.QtGui import QIcon
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icon.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
 
         self.file_handler = FileHandler()
         self.memory = TranslationMemory()
@@ -114,6 +120,21 @@ class MainWindow(QMainWindow):
         self.mod_filter.currentIndexChanged.connect(self.filter_mod_list)
         left_layout.addWidget(self.mod_filter)
         
+        # Sort dropdown
+        self.mod_sort = QComboBox()
+        self.mod_sort.addItem("読み込み順", "load_order")
+        self.mod_sort.addItem("名前順 (A→Z)", "name_asc")
+        self.mod_sort.addItem("名前順 (Z→A)", "name_desc")
+        self.mod_sort.addItem("アイテム数 大→小", "items_desc")
+        self.mod_sort.addItem("アイテム数 小→大", "items_asc")
+        self.mod_sort.addItem("翻訳率 高→低", "rate_desc")
+        self.mod_sort.addItem("翻訳率 低→高", "rate_asc")
+        self.mod_sort.currentIndexChanged.connect(self.sort_mod_list)
+        left_layout.addWidget(self.mod_sort)
+        
+        # Track original load order
+        self._mod_load_order = []
+        
         # Batch translate button
         from PySide6.QtWidgets import QPushButton
         self.batch_translate_btn = QPushButton("一括翻訳")
@@ -123,6 +144,8 @@ class MainWindow(QMainWindow):
         
         self.mod_list = NoScrollListWidget()
         self.mod_list.currentItemChanged.connect(self.on_mod_selected)
+        self.mod_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.mod_list.customContextMenuRequested.connect(self.show_mod_list_context_menu)
         left_layout.addWidget(self.mod_list)
         
         splitter.addWidget(left_widget)
@@ -145,6 +168,7 @@ class MainWindow(QMainWindow):
         self.editor.translationChanged.connect(self.update_current_mod_stats)
         self.editor.translate_btn.clicked.connect(self.start_auto_translate_all)
         self.editor.extract_terms_btn.clicked.connect(self.start_manual_term_extraction)
+        self.editor.searchAllModsRequested.connect(self.search_all_mods)
         right_layout.addWidget(self.editor)
         
         splitter.addWidget(right_widget)
@@ -397,6 +421,138 @@ class MainWindow(QMainWindow):
                 is_ftb = mod_data.get("type") == "ftbquest"
                 item.setHidden(is_ftb)
 
+    def sort_mod_list(self):
+        """Sort MOD list based on selected sort option"""
+        sort_type = self.mod_sort.currentData()
+        
+        # Collect all items with their data
+        items_data = []
+        for i in range(self.mod_list.count()):
+            item = self.mod_list.item(i)
+            mod_path = item.data(Qt.UserRole)
+            if mod_path in self.loaded_mods:
+                mod_data = self.loaded_mods[mod_path]
+                total = len(mod_data["original"])
+                translated = self._count_translated(mod_data)
+                rate = translated / total if total > 0 else 0
+                load_index = self._mod_load_order.index(mod_path) if mod_path in self._mod_load_order else 9999
+                items_data.append({
+                    "path": mod_path,
+                    "name": mod_data["name"],
+                    "total": total,
+                    "translated": translated,
+                    "rate": rate,
+                    "load_index": load_index,
+                    "hidden": item.isHidden()
+                })
+        
+        # Sort based on type
+        if sort_type == "load_order":
+            items_data.sort(key=lambda x: x["load_index"])
+        elif sort_type == "name_asc":
+            items_data.sort(key=lambda x: x["name"].lower())
+        elif sort_type == "name_desc":
+            items_data.sort(key=lambda x: x["name"].lower(), reverse=True)
+        elif sort_type == "items_desc":
+            items_data.sort(key=lambda x: x["total"], reverse=True)
+        elif sort_type == "items_asc":
+            items_data.sort(key=lambda x: x["total"])
+        elif sort_type == "rate_desc":
+            items_data.sort(key=lambda x: x["rate"], reverse=True)
+        elif sort_type == "rate_asc":
+            items_data.sort(key=lambda x: x["rate"])
+        
+        # Remember current selection
+        current_item = self.mod_list.currentItem()
+        current_path = current_item.data(Qt.UserRole) if current_item else None
+        
+        # Clear and rebuild list
+        self.mod_list.blockSignals(True)
+        self.mod_list.clear()
+        
+        from PySide6.QtWidgets import QListWidgetItem
+        from PySide6.QtGui import QColor
+        
+        new_current_item = None
+        for data in items_data:
+            mod_path = data["path"]
+            mod_data = self.loaded_mods[mod_path]
+            
+            item = QListWidgetItem(self._format_mod_display(mod_data["name"], data["translated"], data["total"]))
+            char_count = mod_data.get("_char_count", 0)
+            item.setToolTip(f"{mod_data['name']}\n原文: {char_count:,} 文字")
+            item.setData(Qt.UserRole, mod_path)
+            
+            if data["total"] > 0 and data["translated"] == data["total"]:
+                item.setForeground(QColor("#4ade80"))
+            else:
+                item.setForeground(QColor("#d4d4d4"))
+            
+            item.setHidden(data["hidden"])
+            self.mod_list.addItem(item)
+            
+            if mod_path == current_path:
+                new_current_item = item
+        
+        self.mod_list.blockSignals(False)
+        
+        # Restore selection
+        if new_current_item:
+            self.mod_list.setCurrentItem(new_current_item)
+
+    def search_all_mods(self, search_text):
+        """全MODを横断検索し、検索語がヒットしたMODのみをMOD一覧に表示"""
+        search_text = search_text.lower().strip()
+        
+        # 検索語が空の場合はすべて表示
+        if not search_text:
+            for i in range(self.mod_list.count()):
+                self.mod_list.item(i).setHidden(False)
+            self.statusBar().showMessage("検索をクリアしました", 3000)
+            return
+        
+        # 現在のMODの翻訳を保存
+        if self.current_mod_path:
+            self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
+        
+        matched_count = 0
+        total_count = self.mod_list.count()
+        
+        for i in range(total_count):
+            item = self.mod_list.item(i)
+            mod_path = item.data(Qt.UserRole)
+            
+            if mod_path not in self.loaded_mods:
+                item.setHidden(True)
+                continue
+            
+            mod_data = self.loaded_mods[mod_path]
+            found = False
+            
+            # MOD名で検索
+            if search_text in mod_data["name"].lower():
+                found = True
+            
+            # 原文で検索
+            if not found:
+                for key, original in mod_data["original"].items():
+                    if search_text in key.lower() or search_text in original.lower():
+                        found = True
+                        break
+            
+            # 翻訳文で検索
+            if not found:
+                for key, translation in mod_data["translations"].items():
+                    if translation and search_text in translation.lower():
+                        found = True
+                        break
+            
+            item.setHidden(not found)
+            if found:
+                matched_count += 1
+        
+        self.statusBar().showMessage(f"「{search_text}」: {matched_count}/{total_count} MODがマッチ", 5000)
+
     def _check_snbt_applied(self, quests_folder):
         """Check if SNBT has already been applied by looking for backup files."""
         import os
@@ -448,12 +604,6 @@ class MainWindow(QMainWindow):
         menu.addAction(add_dictionary_action)
         
         menu.addSeparator()
-
-        create_dict_all_action = QAction("全MODから辞書作成 (クエスト除外)", self)
-        create_dict_all_action.triggered.connect(self.create_dictionary_from_all_mods)
-        menu.addAction(create_dict_all_action)
-        
-        menu.addSeparator()
         
         clear_menu = menu.addMenu("翻訳をクリア")
         
@@ -470,6 +620,95 @@ class MainWindow(QMainWindow):
         clear_menu.addAction(clear_all_action)
         
         menu.exec(self.editor.table.mapToGlobal(pos))
+
+    def show_mod_list_context_menu(self, pos):
+        """Show context menu for MOD list"""
+        menu = QMenu(self)
+        
+        # Get clicked item
+        item = self.mod_list.itemAt(pos)
+        
+        if item:
+            mod_path = item.data(Qt.UserRole)
+            mod_data = self.loaded_mods.get(mod_path, {})
+            mod_name = mod_data.get("name", "このMOD")
+            
+            remove_action = QAction(f"「{self._truncate_name(mod_name, 15)}」を削除", self)
+            remove_action.triggered.connect(lambda: self.remove_mod(mod_path))
+            menu.addAction(remove_action)
+            
+            menu.addSeparator()
+        
+        remove_all_action = QAction("すべてのMOD・クエストを削除", self)
+        remove_all_action.triggered.connect(self.remove_all_mods)
+        menu.addAction(remove_all_action)
+        
+        menu.exec(self.mod_list.mapToGlobal(pos))
+
+    def remove_mod(self, mod_path):
+        """Remove a single MOD from the list"""
+        if mod_path not in self.loaded_mods:
+            return
+        
+        mod_name = self.loaded_mods[mod_path]["name"]
+        
+        confirm = QMessageBox.question(
+            self, "確認", f"「{mod_name}」をリストから削除しますか？"
+        )
+        
+        if confirm == QMessageBox.Yes:
+            # Remove from data
+            del self.loaded_mods[mod_path]
+            if mod_path in self._mod_load_order:
+                self._mod_load_order.remove(mod_path)
+            
+            # Remove from list widget
+            for i in range(self.mod_list.count()):
+                item = self.mod_list.item(i)
+                if item.data(Qt.UserRole) == mod_path:
+                    self.mod_list.takeItem(i)
+                    break
+            
+            # Clear editor if it was the current one
+            if self.current_mod_path == mod_path:
+                self.current_mod_path = None
+                self.editor.hide()
+                self.mod_label.show()
+                self.setWindowTitle("Minecraft MOD 翻訳ツール")
+            
+            # Update SNBT button visibility
+            self._update_snbt_button_visibility()
+            
+            self.statusBar().showMessage(f"「{mod_name}」を削除しました", 3000)
+
+    def remove_all_mods(self):
+        """Remove all MODs and quests from the list"""
+        if not self.loaded_mods:
+            QMessageBox.information(self, "情報", "リストに項目がありません。")
+            return
+        
+        count = len(self.loaded_mods)
+        
+        confirm = QMessageBox.question(
+            self, "確認", f"すべてのMOD・クエスト ({count}個) をリストから削除しますか？"
+        )
+        
+        if confirm == QMessageBox.Yes:
+            # Clear all data
+            self.loaded_mods.clear()
+            self._mod_load_order.clear()
+            self.mod_list.clear()
+            
+            # Clear editor
+            self.current_mod_path = None
+            self.editor.hide()
+            self.mod_label.show()
+            self.setWindowTitle("Minecraft MOD 翻訳ツール")
+            
+            # Update SNBT button visibility
+            self._update_snbt_button_visibility()
+            
+            self.statusBar().showMessage(f"{count}個の項目を削除しました", 3000)
 
     def add_selection_to_glossary(self):
         # Determine what is selected
@@ -687,6 +926,10 @@ class MainWindow(QMainWindow):
                 item.setForeground(QColor("#d4d4d4"))
             
             self.mod_list.addItem(item)
+            
+            # Track load order
+            if quests_folder not in self._mod_load_order:
+                self._mod_load_order.append(quests_folder)
             
             # Check if SNBT is already applied by looking for backup files
             snbt_already_applied = self._check_snbt_applied(quests_folder)
@@ -915,6 +1158,10 @@ class MainWindow(QMainWindow):
                 item.setForeground(QColor("#d4d4d4"))
             
             self.mod_list.addItem(item)
+            
+            # Track load order
+            if path not in self._mod_load_order:
+                self._mod_load_order.append(path)
             
             # Select if it's the first one
             if self.mod_list.count() == 1:
@@ -1208,6 +1455,7 @@ class MainWindow(QMainWindow):
         self.editor.setEnabled(True)
         self.mod_list.setEnabled(True)
         self.batch_translate_btn.setEnabled(True)
+        self.statusBar().showMessage("一括翻訳完了", 3000)  # Clear "translating" message
         
         self.refresh_all_mod_colors()
         
@@ -1330,6 +1578,7 @@ class MainWindow(QMainWindow):
         self.toolbar.setEnabled(True)
         self.editor.setEnabled(True)
         self.mod_list.setEnabled(True)
+        self.statusBar().showMessage("翻訳完了", 3000)  # Clear "translating" message
         
         if self.translation_errors:
             error_count = len(self.translation_errors)
