@@ -88,8 +88,9 @@ class MainWindow(QMainWindow):
         self.apply_snbt_btn = QToolButton()
         self.apply_snbt_btn.setText("SNBT適用")
         self.apply_snbt_btn.clicked.connect(self.apply_ftbquest_snbt)
-        self.apply_snbt_btn.setVisible(False)  # Hidden until FTB Quest is loaded
-        self.toolbar.addWidget(self.apply_snbt_btn)
+        # Store the action returned by addWidget to control visibility
+        self.apply_snbt_action = self.toolbar.addWidget(self.apply_snbt_btn)
+        self.apply_snbt_action.setVisible(False)  # Hidden until FTB Quest is loaded
 
         # Splitter Layout
         splitter = QSplitter(Qt.Horizontal)
@@ -213,8 +214,20 @@ class MainWindow(QMainWindow):
                     self.process_path(path)
                 self.progress_bar.hide()
                 self.statusBar().showMessage("セッション復元完了", 3000)
+                # Update SNBT button visibility after session restore
+                self._update_snbt_button_visibility()
         except:
             pass
+    
+    def _update_snbt_button_visibility(self):
+        """Update SNBT button visibility based on loaded FTB quests."""
+        has_ftb = any(data.get("type") == "ftbquest" for data in self.loaded_mods.values())
+        print(f"[DEBUG] _update_snbt_button_visibility: has_ftb={has_ftb}, loaded_mods count={len(self.loaded_mods)}")
+        # Control visibility via the toolbar action, not the button itself
+        self.apply_snbt_action.setVisible(has_ftb)
+        print(f"[DEBUG] apply_snbt_action.isVisible() after setVisible: {self.apply_snbt_action.isVisible()}")
+        if has_ftb:
+            self._update_snbt_button_style()
 
     def _save_session(self):
         """Save current session (loaded MOD paths)"""
@@ -387,17 +400,17 @@ class MainWindow(QMainWindow):
     def _check_snbt_applied(self, quests_folder):
         """Check if SNBT has already been applied by looking for backup files."""
         import os
-        # Look for .snbt.bak files in the quests folder
+        # Look for backup files in the quests folder (both .snbt.bak and .backup_xxx formats)
         for root, dirs, files in os.walk(quests_folder):
             for f in files:
-                if f.endswith('.snbt.bak'):
+                if '.backup' in f or f.endswith('.snbt.bak'):
                     return True
         return False
 
     def _update_snbt_button_style(self):
         """Update SNBT button style based on whether there are unapplied quests."""
         unapplied = any(
-            data.get("type") == "ftbquest" and not data.get("snbt_applied", True)
+            data.get("type") == "ftbquest" and not data.get("snbt_applied", False)
             for data in self.loaded_mods.values()
         )
         
@@ -680,8 +693,7 @@ class MainWindow(QMainWindow):
             self.loaded_mods[quests_folder]["snbt_applied"] = snbt_already_applied
             
             # Show SNBT apply button when FTB Quest is loaded
-            self.apply_snbt_btn.setVisible(True)
-            self._update_snbt_button_style()
+            self._update_snbt_button_visibility()
             
             if self.mod_list.count() == 1:
                 self.mod_list.setCurrentItem(item)
@@ -1718,6 +1730,9 @@ class MainWindow(QMainWindow):
             self, "SNBT適用確認",
             f"{len(ftb_mods)} 件のFTBクエストのSNBTファイルを変換します。\n"
             "元のファイルは .backup_日時 としてバックアップされます。\n\n"
+            "⚠️ 注意: 翻訳キーはフォルダ名から生成されます。\n"
+            "フォルダ名を変更すると、リソースパックのインポート時に\n"
+            "キーが一致しなくなります。\n\n"
             "続行しますか？",
             QMessageBox.Yes | QMessageBox.No
         )
@@ -1822,12 +1837,34 @@ class MainWindow(QMainWindow):
             for mod_path, mod_data in self.loaded_mods.items():
                 target_file = mod_data["target_file"]
                 ja_target = target_file.replace('en_us', 'ja_jp')
+                mod_type = mod_data.get("type", "mod")
                 
                 for pack_path, translations in all_translations.items():
                     pack_path_normalized = pack_path.replace('\\', '/')
                     ja_target_normalized = ja_target.replace('\\', '/')
                     
+                    matched = False
+                    
+                    # Standard path matching
                     if pack_path_normalized.endswith(ja_target_normalized) or ja_target_normalized.endswith(pack_path_normalized):
+                        matched = True
+                    # FTB Quest special matching
+                    elif mod_type == "ftbquest" and "ftbquests" in pack_path_normalized:
+                        matched = True
+                    
+                    if matched:
+                        matching_keys = set(translations.keys()) & set(mod_data["original"].keys())
+                        if matching_keys:
+                            for key in matching_keys:
+                                mod_data["translations"][key] = translations[key]
+                            applied_count += len(matching_keys)
+                            matched_mods.append(mod_data["name"])
+                            self.memory.update({k: translations[k] for k in matching_keys})
+                            break
+                
+                # Fallback: For FTB quests, try key matching across all pack translations
+                if mod_type == "ftbquest" and mod_data["name"] not in matched_mods:
+                    for pack_path, translations in all_translations.items():
                         matching_keys = set(translations.keys()) & set(mod_data["original"].keys())
                         if matching_keys:
                             for key in matching_keys:

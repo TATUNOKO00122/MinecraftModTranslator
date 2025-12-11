@@ -39,7 +39,7 @@ class SettingsDialog(QDialog):
         for model_id, model_name in self.models:
             self.model_combo.addItem(model_name, model_id)
             
-        current_model = self.settings.value("model", self.models[0][0])
+        current_model = self.settings.value("model", "openai/gpt-4o-mini")
         index = self.model_combo.findData(current_model)
         if index >= 0:
             self.model_combo.setCurrentIndex(index)

@@ -3,12 +3,29 @@ FTB Quest Handler - Parse SNBT files and extract translatable text
 """
 import os
 import re
-import ftb_snbt_lib as slib
-from ftb_snbt_lib import tag
+import sys
+import traceback
+
+# Try to import ftb_snbt_lib with error handling for PyInstaller
+try:
+    import ftb_snbt_lib as slib
+    from ftb_snbt_lib import tag
+    FTB_SNBT_AVAILABLE = True
+except ImportError as e:
+    FTB_SNBT_AVAILABLE = False
+    slib = None
+    tag = None
+    print(f"WARNING: ftb_snbt_lib not available: {e}")
+    traceback.print_exc()
+
 
 
 def detect_ftbquests(minecraft_path):
     """Detect FTB Quests folder in a Minecraft directory"""
+    if not FTB_SNBT_AVAILABLE:
+        print("FTB Quest detection skipped: ftb_snbt_lib not available")
+        return None
+    
     possible_paths = [
         os.path.join(minecraft_path, "config", "ftbquests", "quests"),
         os.path.join(minecraft_path, "kubejs", "data", "ftbquests", "quests"),
@@ -45,6 +62,9 @@ def filter_text(text):
 
 def parse_snbt_file(filepath):
     """Parse a single SNBT file and return the data"""
+    if not FTB_SNBT_AVAILABLE:
+        print(f"Cannot parse SNBT: ftb_snbt_lib not available")
+        return None
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -61,6 +81,9 @@ def extract_texts(quest_data, prefix, lang_dict=None):
     """
     if lang_dict is None:
         lang_dict = {}
+    
+    if not FTB_SNBT_AVAILABLE or tag is None:
+        return lang_dict
     
     if not isinstance(quest_data, tag.Compound):
         return lang_dict
