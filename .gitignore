@@ -54,3 +54,10 @@ run.ps1
 # Sample MODs
 SampleMod.jar
 AdventureMod.jar
+
+# Build scripts
+build_exe.bat
+
+# Test SNBT files
+exploration.snbt
+exploration.snbt.backup*
