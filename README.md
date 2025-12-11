@@ -1,22 +1,105 @@
 # MinecraftModTranslator
 
-Minecraft MOD/リソースパックの日本語化を支援するデスクトップアプリケーションです。
+<div align="center">
 
-## 機能
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 
-- **MOD翻訳**: JARファイル内の言語ファイル（`en_us.json`）を日本語に翻訳
-- **FTB Quests対応**: FTB QuestsのSNBTファイルを翻訳
-- **AI翻訳**: OpenAI API（GPT-4o mini等）を使用した自動翻訳
-- **翻訳メモリ**: 過去の翻訳を記憶し、一貫性のある翻訳を提供
-- **用語集**: カスタム用語集による統一された翻訳
-- **リソースパック出力**: 翻訳結果をリソースパックとして出力
+**Minecraft MOD/Modpackの日本語化を強力に支援するデスクトップアプリケーション**
 
-## 必要要件
+</div>
 
+---
+
+## 📖 概要
+
+MinecraftModTranslatorは、Minecraft MODやModpackの翻訳作業を効率化するためのツールです。AI翻訳機能により、大量のテキストを素早く翻訳し、リソースパックとして出力できます。
+
+## ✨ 主な機能
+
+### 🎮 MOD翻訳
+- **JAR/ZIPファイル対応**: MODのJARファイルから言語ファイル（`en_us.json`）を自動読み込み
+- **Minecraftディレクトリ対応**: modsフォルダ内のすべてのMODを一括読み込み
+- **リソースパック出力**: 翻訳結果を`ja_jp.json`形式でリソースパックとして出力
+
+### 📜 FTB Quests対応
+- **SNBTファイル解析**: FTB QuestsのクエストデータをSNBT形式から直接読み込み
+- **クエスト翻訳**: タイトル、説明文、サブタイトルなど全テキストを翻訳
+- **SNBT変換**: 翻訳キーをSNBTファイルに直接適用（バックアップ自動作成）
+
+### 🤖 AI翻訳エンジン
+- **複数モデル対応**: OpenRouter API経由で以下のモデルを選択可能
+  - Gemini 2.0 Flash（無料）
+  - GPT-4o / GPT-4o mini
+  - Claude 3.5 Sonnet / Claude 3 Haiku
+  - GPT-3.5 Turbo
+- **並列翻訳**: 最大10並列でのAPI同時リクエストに対応
+- **一括翻訳**: 選択項目または全項目を一括翻訳
+- **翻訳中断**: 長時間の翻訳処理を途中で停止可能
+
+### 📚 翻訳支援機能
+- **翻訳メモリ**: 過去の翻訳を自動保存し、同じ原文に対して一貫した翻訳を提供
+- **用語集（グロッサリー）**: カスタム用語集で固有名詞や専門用語の翻訳を統一
+- **AI用語抽出**: AIが原文から重要な用語を自動抽出して用語集に追加
+
+### 🔍 編集機能
+- **リアルタイムプレビュー**: 原文と翻訳文を並べて確認
+- **検索・フィルタ**: キーワード検索、未翻訳のみ表示、原文と同じ翻訳のみ表示
+- **MODフィルタ**: 翻訳進捗に応じたMODリストのフィルタリング
+- **右クリックメニュー**: 選択テキストを用語集に追加、翻訳のクリア
+
+### 💾 セッション管理
+- **自動保存**: アプリケーション終了時に作業状態を自動保存
+- **セッション復元**: 前回の作業状態を復元して続きから作業可能
+- **リソースパック読み込み**: 既存の翻訳リソースパックをインポート
+
+## 📥 ダウンロード
+
+[Releases](https://github.com/TATUNOKO00122/MinecraftModTranslator/releases)から最新版のexeファイルをダウンロードしてください。
+
+## 🚀 使い方
+
+### 基本的な流れ
+
+1. **アプリケーションを起動**
+2. **MODを読み込み**
+   - MODファイル（.jar）をドラッグ＆ドロップ
+   - または、Minecraftディレクトリをドラッグ＆ドロップ（modsフォルダ内を一括読み込み）
+3. **設定を開く**（歯車アイコン）
+   - OpenRouter APIキーを入力
+   - 使用するAIモデルを選択
+4. **翻訳を実行**
+   - 個別翻訳：行を選択して「翻訳」ボタン
+   - 一括翻訳：「すべて翻訳」ボタン
+5. **リソースパック出力**
+   - 「リソースパック作成」ボタンで翻訳結果を出力
+
+### FTB Questsの翻訳
+
+1. Modpackのフォルダをドラッグ＆ドロップ
+2. クエストファイルが自動検出されます
+3. 翻訳後、「SNBT適用」ボタンでゲームに反映
+
+## ⚙️ 設定項目
+
+| 項目 | 説明 |
+|------|------|
+| OpenRouter APIキー | AI翻訳に必要なAPIキー |
+| 使用モデル | 翻訳に使用するAIモデル |
+| 並列リクエスト数 | 同時APIリクエスト数（無料モデル: 1-2推奨） |
+| デフォルト出力先 | リソースパックの出力先フォルダ |
+
+## 📋 必要要件
+
+### 実行ファイル版（推奨）
+- Windows 10/11
+- インターネット接続（AI翻訳機能使用時）
+- OpenRouter APIキー
+
+### ソースから実行する場合
 - Python 3.10以上
-- OpenAI APIキー（AI翻訳機能を使用する場合）
-
-## インストール
+- 依存パッケージ（`requirements.txt`参照）
 
 ```bash
 # リポジトリをクローン
@@ -29,19 +112,17 @@ python -m venv .venv
 
 # 依存関係をインストール
 pip install -r requirements.txt
-```
 
-## 使い方
-
-```bash
+# 実行
 python main.py
 ```
 
-1. MODファイル（.jar）またはMinecraftディレクトリをドラッグ＆ドロップ
-2. 設定からOpenAI APIキーを入力
-3. 翻訳したいテキストを選択して翻訳ボタンをクリック
-4. 「リソースパック作成」で翻訳結果を出力
+## 📜 ライセンス
 
-## ライセンス
+MIT License - 詳細は[LICENSE](LICENSE)を参照してください。
 
-MIT License
+## 🙏 謝辞
+
+- [OpenRouter](https://openrouter.ai/) - 複数のAIモデルへの統一的なAPIアクセス
+- [ftb-snbt-lib](https://github.com/ftbteam/ftb-snbt-lib) - SNBT形式の解析
+- [PySide6](https://www.qt.io/qt-for-python) - クロスプラットフォームGUIフレームワーク
