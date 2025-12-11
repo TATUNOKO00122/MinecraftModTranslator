@@ -46,3 +46,11 @@ test_*.py
 test_*.spec
 run_debug.bat
 launcher.vbs
+
+# Execution scripts (user-specific)
+run.bat
+run.ps1
+
+# Sample MODs
+SampleMod.jar
+AdventureMod.jar

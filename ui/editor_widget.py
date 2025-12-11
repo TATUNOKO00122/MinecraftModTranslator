@@ -24,7 +24,7 @@ class EditorWidget(QWidget):
         toolbar.addWidget(self.search_input)
         
         # All MODs search button
-        self.search_all_mods_btn = QPushButton("全MOD検索")
+        self.search_all_mods_btn = QPushButton("横断検索")
         self.search_all_mods_btn.setToolTip("検索語が含まれるMODのみを一覧に表示します")
         self.search_all_mods_btn.clicked.connect(self._on_search_all_mods_clicked)
         toolbar.addWidget(self.search_all_mods_btn)
@@ -38,8 +38,8 @@ class EditorWidget(QWidget):
         self.filter_combo.currentIndexChanged.connect(self.filter_table)
         toolbar.addWidget(self.filter_combo)
         
-        self.extract_terms_btn = QPushButton("用語抽出")
-        self.extract_terms_btn.setToolTip("現在のリストから用語をAI抽出します")
+        self.extract_terms_btn = QPushButton("辞書作成")
+        self.extract_terms_btn.setToolTip("翻訳から辞書をAI作成します")
         toolbar.addWidget(self.extract_terms_btn)
         
         self.translate_btn = QPushButton("一括翻訳")

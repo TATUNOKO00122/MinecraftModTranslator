@@ -105,7 +105,7 @@ class MainWindow(QMainWindow):
         # Left: MOD List
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
-        left_layout.addWidget(QLabel("読み込み済みMOD:"))
+        # Filter dropdown (no label needed)
         
         # Filter dropdown
         from PySide6.QtWidgets import QComboBox
@@ -1538,8 +1538,8 @@ class MainWindow(QMainWindow):
              return
 
         confirm = QMessageBox.question(
-            self, "用語抽出 (AI)",
-            f"{len(current_translations)} 件の翻訳から用語を抽出しますか？\n"
+            self, "辞書作成 (AI)",
+            f"{len(current_translations)} 件の翻訳から辞書を作成しますか？\n"
             "(DeepSeek APIを使用)",
             QMessageBox.Yes | QMessageBox.No
         )
@@ -1659,7 +1659,7 @@ class MainWindow(QMainWindow):
             self, "全MODから辞書作成",
             f"対象MOD: {processed_mods} 件 (除外: {excluded_mods} 件)\n"
             f"テキスト項目数: {len(target_items)} 件\n\n"
-            "AIを使用して用語を抽出しますか？\n"
+            "AIを使用して辞書を作成しますか？\n"
             "(項目数が多い場合、時間がかかることがあります)",
             QMessageBox.Yes | QMessageBox.No
         )
@@ -1681,7 +1681,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "エラー", "API設定が必要です。")
             return
         
-        self.statusBar().showMessage(f"AIで用語を抽出中... (対象: {len(original_items)} 項目)")
+        self.statusBar().showMessage(f"AIで辞書を作成中... (対象: {len(original_items)} 項目)")
         self.toolbar.setEnabled(False)
         
         existing_glossary = self.glossary.get_terms()
@@ -1707,7 +1707,7 @@ class MainWindow(QMainWindow):
         # Ask user if they want AI extraction
         confirm = QMessageBox.question(
             self, "辞書ツール",
-            "AIを使用して用語（地名、アイテム名など）を抽出しますか？\n"
+            "AIを使用して辞書を作成しますか？\n"
             "抽出された用語は辞書に追加できます。\n\n"
             "(DeepSeek APIを使用 - 安価)",
             QMessageBox.Yes | QMessageBox.No
@@ -1725,7 +1725,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "エラー", "API設定が必要です。")
             return
         
-        self.statusBar().showMessage("AIで用語を抽出中...")
+        self.statusBar().showMessage("AIで辞書を作成中...")
         self.toolbar.setEnabled(False)
         
         existing_glossary = self.glossary.get_terms()
@@ -1749,7 +1749,7 @@ class MainWindow(QMainWindow):
         self.ai_extractor_thread = None
         
         if not extracted_terms:
-            self.statusBar().showMessage("用語が見つかりませんでした", 3000)
+            self.statusBar().showMessage("辞書に追加する項目が見つかりませんでした", 3000)
             return
         
         # Show dialog for user to select terms
@@ -1757,18 +1757,18 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             added_count = dialog.get_added_count()
             if added_count > 0:
-                self.statusBar().showMessage(f"{added_count} 件の用語を辞書に追加しました", 5000)
+                self.statusBar().showMessage(f"{added_count} 件を辞書に追加しました", 5000)
             else:
-                self.statusBar().showMessage("用語は追加されませんでした", 3000)
+                self.statusBar().showMessage("辞書に追加されませんでした", 3000)
         else:
-            self.statusBar().showMessage("用語抽出をスキップしました", 3000)
+            self.statusBar().showMessage("辞書作成をスキップしました", 3000)
     
     def _on_ai_extraction_error(self, error_msg):
         """Handle AI extraction error."""
         self.toolbar.setEnabled(True)
         self.ai_extractor_thread = None
-        self.statusBar().showMessage("用語抽出に失敗しました", 3000)
-        QMessageBox.warning(self, "AI抽出エラー", f"用語抽出中にエラーが発生しました:\n{error_msg}")
+        self.statusBar().showMessage("辞書作成に失敗しました", 3000)
+        QMessageBox.warning(self, "AI辞書作成エラー", f"辞書作成中にエラーが発生しました:\n{error_msg}")
 
     # --- Export ---
     def export_resource_pack(self):
