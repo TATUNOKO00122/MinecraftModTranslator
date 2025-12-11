@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "F:\cursor　作成フォルダ\MinecraftMOD翻訳ツール\main.py", line 4, in <module>
-    from ui.main_window import MainWindow
-ImportError: cannot import name 'MainWindow' from 'ui.main_window' (F:\cursor　作成フォルダ\MinecraftMOD翻訳ツール\ui\main_window.py). Did you mean: 'main_window'?
