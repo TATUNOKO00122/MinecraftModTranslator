@@ -1,16 +1,47 @@
-# React + Vite
+# MinecraftModTranslator
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Minecraft MOD/リソースパックの日本語化を支援するデスクトップアプリケーションです。
 
-Currently, two official plugins are available:
+## 機能
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **MOD翻訳**: JARファイル内の言語ファイル（`en_us.json`）を日本語に翻訳
+- **FTB Quests対応**: FTB QuestsのSNBTファイルを翻訳
+- **AI翻訳**: OpenAI API（GPT-4o mini等）を使用した自動翻訳
+- **翻訳メモリ**: 過去の翻訳を記憶し、一貫性のある翻訳を提供
+- **用語集**: カスタム用語集による統一された翻訳
+- **リソースパック出力**: 翻訳結果をリソースパックとして出力
 
-## React Compiler
+## 必要要件
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- Python 3.10以上
+- OpenAI APIキー（AI翻訳機能を使用する場合）
 
-## Expanding the ESLint configuration
+## インストール
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+# リポジトリをクローン
+git clone https://github.com/TATUNOKO00122/MinecraftModTranslator.git
+cd MinecraftModTranslator
+
+# 仮想環境を作成（推奨）
+python -m venv .venv
+.venv\Scripts\activate
+
+# 依存関係をインストール
+pip install -r requirements.txt
+```
+
+## 使い方
+
+```bash
+python main.py
+```
+
+1. MODファイル（.jar）またはMinecraftディレクトリをドラッグ＆ドロップ
+2. 設定からOpenAI APIキーを入力
+3. 翻訳したいテキストを選択して翻訳ボタンをクリック
+4. 「リソースパック作成」で翻訳結果を出力
+
+## ライセンス
+
+MIT License
