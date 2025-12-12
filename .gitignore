@@ -61,3 +61,12 @@ build_exe.bat
 # Test SNBT files
 exploration.snbt
 exploration.snbt.backup*
+
+# Old/unused folders
+python_app/
+sample_mod/
+sample_mod2/
+
+# Icon files (local only)
+icon.ico
+icon.png
