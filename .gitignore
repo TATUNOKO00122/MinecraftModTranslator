@@ -1,0 +1,72 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Build
+build/
+dist/
+*.spec
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Node
+node_modules/
+dist-ssr/
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Application data (user-specific)
+session.json
+translation_memory.json
+glossary.json
+
+# Debug/Test files
+*.txt
+test_*.py
+test_*.spec
+run_debug.bat
+launcher.vbs
+
+# Execution scripts (user-specific)
+run.bat
+run.ps1
+
+# Sample MODs
+SampleMod.jar
+AdventureMod.jar
+
+# Build scripts
+build_exe.bat
+
+# Test SNBT files
+exploration.snbt
+exploration.snbt.backup*
+
+# Old/unused folders
+python_app/
+sample_mod/
+sample_mod2/
+
+# Icon files (local only)
+icon.ico
+icon.png
