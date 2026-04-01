@@ -6,7 +6,16 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QLineEdit,
                                 QSpinBox, QGroupBox, QFormLayout, QMessageBox)
 from PySide6.QtCore import QSettings, Qt
 
+try:
+    import keyring
+    KEYRING_AVAILABLE = True
+except ImportError:
+    KEYRING_AVAILABLE = False
+
 from logic.file_handler import PACK_FORMATS, TARGET_LANGUAGES
+
+KEYRING_SERVICE = "MinecraftModTranslator"
+KEYRING_USERNAME = "api_key"
 
 
 class SettingsDialog(QDialog):
@@ -23,10 +32,14 @@ class SettingsDialog(QDialog):
         layout.addWidget(QLabel("OpenRouter API Key:"))
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.Password)
-        self.api_key_input.setText(self.settings.value("api_key", ""))
+        stored_key = self._load_api_key()
+        self.api_key_input.setText(stored_key)
         layout.addWidget(self.api_key_input)
         
-        layout.addWidget(QLabel("キーはローカルに保存されます。"))
+        if KEYRING_AVAILABLE:
+            layout.addWidget(QLabel("キーはOSのキーチェーンに安全に保存されます。"))
+        else:
+            layout.addWidget(QLabel("⚠ keyring未インストール: キーは平文で保存されます。\npip install keyring で安全な保存が可能です。"))
         
         layout.addSpacing(10)
 
@@ -300,8 +313,34 @@ class SettingsDialog(QDialog):
         if dir_path:
             self.export_dir_input.setText(dir_path)
 
+    def _load_api_key(self):
+        if KEYRING_AVAILABLE:
+            try:
+                key = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
+                if key:
+                    return key
+            except Exception:
+                pass
+        return self.settings.value("api_key", "")
+
+    def _save_api_key(self, api_key):
+        if KEYRING_AVAILABLE:
+            try:
+                if api_key:
+                    keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, api_key)
+                else:
+                    try:
+                        keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
+                    except keyring.errors.PasswordDeleteError:
+                        pass
+                self.settings.remove("api_key")
+                return
+            except Exception:
+                pass
+        self.settings.setValue("api_key", api_key)
+
     def save_settings(self):
-        self.settings.setValue("api_key", self.api_key_input.text())
+        self._save_api_key(self.api_key_input.text())
         self.settings.setValue("model", self.model_combo.currentData())
         self.settings.setValue("freq_model", self.freq_model_combo.currentData())
         self.settings.setValue("export_dir", self.export_dir_input.text())
@@ -311,8 +350,9 @@ class SettingsDialog(QDialog):
         self.accept()
 
     def get_settings(self):
+        api_key = self.api_key_input.text()
         return {
-            "api_key": self.api_key_input.text(),
+            "api_key": api_key,
             "model": self.model_combo.currentData(),
             "freq_model": self.freq_model_combo.currentData(),
             "export_dir": self.export_dir_input.text(),

@@ -1,0 +1,4 @@
+PySide6
+requests
+ftb_snbt_lib
+keyring

@@ -31,6 +31,17 @@ TARGET_LANGUAGES = {
 
 
 class FileHandler:
+    @staticmethod
+    def _is_safe_zip_path(path):
+        if not path:
+            return False
+        norm = os.path.normpath(path)
+        if norm.startswith('..') or os.path.isabs(norm):
+            return False
+        if '..' in norm.split(os.sep):
+            return False
+        return True
+
     def _normalize_escapes(self, text):
         """Fix escaped characters that should be plain in final output.
         
@@ -65,6 +76,8 @@ class FileHandler:
             with zipfile.ZipFile(file_path, 'r') as zf:
                 file_list = zf.namelist()
                 for f in file_list:
+                    if not self._is_safe_zip_path(f):
+                        continue
                     if f.startswith('assets/') and '/lang/' in f:
                         if f.endswith('.json') or f.endswith('.lang'):
                             found_files.append(f)
@@ -105,7 +118,8 @@ class FileHandler:
             return self.read_translation_file_from_zip(source_path, internal_path)
     
     def read_translation_file_from_zip(self, zip_path, internal_path):
-        """Reads a translation file from a zip."""
+        if not self._is_safe_zip_path(internal_path):
+            raise ValueError(f"安全でないパス: {internal_path}")
         with zipfile.ZipFile(zip_path, 'r') as zf:
             with zf.open(internal_path) as f:
                 content = f.read().decode('utf-8', errors='replace')
@@ -164,7 +178,11 @@ class FileHandler:
             json.dump(pack_meta, f, indent=2)
             
         full_target_path = os.path.join(output_path, target_path)
-        os.makedirs(os.path.dirname(full_target_path), exist_ok=True)
+        real_output = os.path.realpath(output_path)
+        real_target = os.path.realpath(os.path.dirname(full_target_path))
+        if not real_target.startswith(real_output):
+            raise ValueError(f"パストラバーサル検出: {target_path}")
+        os.makedirs(real_target, exist_ok=True)
         
         normalized = self._normalize_translations(translations)
         with open(full_target_path, 'w', encoding='utf-8') as f:
@@ -192,7 +210,11 @@ class FileHandler:
             target_path = mod["target_file"].replace('en_us', target_lang)
             
             full_target_path = os.path.join(output_path, target_path)
-            os.makedirs(os.path.dirname(full_target_path), exist_ok=True)
+            real_output = os.path.realpath(output_path)
+            real_target = os.path.realpath(os.path.dirname(full_target_path))
+            if not real_target.startswith(real_output):
+                raise ValueError(f"パストラバーサル検出: {target_path}")
+            os.makedirs(real_target, exist_ok=True)
             
             normalized = self._normalize_translations(translations)
             with open(full_target_path, 'w', encoding='utf-8') as f:

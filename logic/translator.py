@@ -254,11 +254,18 @@ class TranslatorThread(QThread):
     partial_save = Signal(dict)
     validation_finished = Signal(dict)
 
+    def _build_headers(self):
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+            "X-Title": "Minecraft MOD Translator Desktop"
+        }
+
     def __init__(self, items, api_key, model, glossary=None, parallel_count=3, 
                  memory=None, mod_name=None, target_lang="ja_jp"):
         super().__init__()
         self.items = items
-        self.api_key = api_key
+        self._api_key = api_key
         self.model = model
         self.glossary = glossary or {}
         self.is_running = True
@@ -345,6 +352,7 @@ class TranslatorThread(QThread):
 
         if validation_results:
             self.validation_finished.emit(validation_results)
+        self._api_key = None
         self.finished.emit(results)
 
     def _run_parallel(self, batches, results, validation_results, total_items):
@@ -470,11 +478,7 @@ class TranslatorThread(QThread):
                 variable_map[key] = []
         
         url = "https://openrouter.ai/api/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "X-Title": "Minecraft MOD Translator Desktop"
-        }
+        headers = self._build_headers()
         
         prompt_content = json.dumps(protected_items, ensure_ascii=False)
         

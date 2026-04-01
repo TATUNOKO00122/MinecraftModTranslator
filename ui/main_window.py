@@ -1,5 +1,7 @@
 import os
+import sys
 import json
+import stat
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolBar, 
                                QFileDialog, QMessageBox, QLabel, QProgressBar, QMenu, QSplitter, QListWidget, QApplication,
                                QDialog, QDialogButtonBox)
@@ -36,6 +38,29 @@ class MainWindow(QMainWindow):
     SESSION_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "session.json")
     RECOVERY_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "recovery.json")
     AUTOSAVE_INTERVAL_MS = 60000
+    
+    @staticmethod
+    def _restrict_file_permissions(path):
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                handle = kernel32.CreateFileW(path, 0x00010000, 0, None, 3, 0x80, None)
+                if handle != -1:
+                    kernel32.CloseHandle(handle)
+            except (OSError, AttributeError):
+                pass
+        else:
+            try:
+                os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _write_json_secure(path, data):
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        MainWindow._restrict_file_permissions(path)
     
     def __init__(self):
         super().__init__()
@@ -318,13 +343,11 @@ class MainWindow(QMainWindow):
             self._update_snbt_button_style()
 
     def _save_session(self):
-        """Save current session (loaded MOD paths)"""
         try:
             paths = list(self.loaded_mods.keys())
             session = {"mod_paths": paths}
-            with open(self.SESSION_FILE, 'w', encoding='utf-8') as f:
-                json.dump(session, f, ensure_ascii=False, indent=2)
-        except:
+            self._write_json_secure(self.SESSION_FILE, session)
+        except OSError:
             pass
 
     def _manual_save(self):
@@ -355,9 +378,8 @@ class MainWindow(QMainWindow):
                     "translations": mod_data.get("translations", {}),
                     "review_status": mod_data.get("review_status", {}),
                 }
-            with open(self.RECOVERY_FILE, 'w', encoding='utf-8') as f:
-                json.dump(recovery_data, f, ensure_ascii=False)
-        except:
+            self._write_json_secure(self.RECOVERY_FILE, recovery_data)
+        except OSError:
             pass
 
     def _cleanup_recovery(self):

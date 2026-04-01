@@ -197,6 +197,10 @@ class TranslationMemoryV2:
             return dict(row)
         return None
     
+    @staticmethod
+    def _build_in_clause(count):
+        return ','.join(['?' for _ in range(count)])
+
     def apply_to(self, target_data: Dict[str, str]) -> Dict[str, str]:
         """
         Apply stored translations to target data.
@@ -211,15 +215,14 @@ class TranslationMemoryV2:
         results = {}
         keys = list(target_data.keys())
         
-        # Batch query for performance
         batch_size = 500
         for i in range(0, len(keys), batch_size):
             batch_keys = keys[i:i + batch_size]
-            placeholders = ','.join(['?' for _ in batch_keys])
-            cursor.execute(f'''
-                SELECT key, translation FROM translations 
-                WHERE key IN ({placeholders})
-            ''', batch_keys)
+            placeholders = self._build_in_clause(len(batch_keys))
+            cursor.execute(
+                f'SELECT key, translation FROM translations WHERE key IN ({placeholders})',
+                batch_keys
+            )
             
             for row in cursor.fetchall():
                 results[row['key']] = row['translation']
@@ -227,16 +230,16 @@ class TranslationMemoryV2:
         return results
     
     def mark_reviewed(self, keys: List[str], reviewed: bool = True):
-        """Mark translations as reviewed."""
         if not keys:
             return
         
         conn = self._get_connection()
         cursor = conn.cursor()
-        placeholders = ','.join(['?' for _ in keys])
-        cursor.execute(f'''
-            UPDATE translations SET reviewed = ? WHERE key IN ({placeholders})
-        ''', [1 if reviewed else 0] + keys)
+        placeholders = self._build_in_clause(len(keys))
+        cursor.execute(
+            f'UPDATE translations SET reviewed = ? WHERE key IN ({placeholders})',
+            [1 if reviewed else 0] + keys
+        )
         conn.commit()
     
     def get_unreviewed_count(self) -> int:

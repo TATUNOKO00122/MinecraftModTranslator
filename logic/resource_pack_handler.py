@@ -3,6 +3,8 @@ import json
 import zipfile
 from PySide6.QtCore import QThread, Signal
 
+from logic.file_handler import FileHandler
+
 class ResourcePackImportThread(QThread):
     progress = Signal(int, int) # current, total
     finished = Signal(dict, int, list) # all_translations, applied_count, matched_mods
@@ -39,7 +41,7 @@ class ResourcePackImportThread(QThread):
                                 translations = self.file_handler._parse_lang(content)
                             if translations:
                                 all_translations[rel_path] = translations
-                    except:
+                    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                         continue
                     self.progress.emit(i + 1, total_files)
             else:
@@ -49,6 +51,8 @@ class ResourcePackImportThread(QThread):
                     total_files = len(files_to_scan)
                     
                     for i, f in enumerate(files_to_scan):
+                        if not FileHandler._is_safe_zip_path(f):
+                            continue
                         try:
                             with zf.open(f) as zfile:
                                 content = zfile.read().decode('utf-8')
@@ -58,7 +62,7 @@ class ResourcePackImportThread(QThread):
                                     translations = self.file_handler._parse_lang(content)
                                 if translations:
                                     all_translations[f] = translations
-                        except:
+                        except (json.JSONDecodeError, UnicodeDecodeError, OSError, KeyError):
                             continue
                         self.progress.emit(i + 1, total_files)
 
