@@ -80,8 +80,6 @@ def protect_variables(text):
         for start, end, placeholder in reversed(replacements):
             result = result[:start] + placeholder + result[end:]
     
-    result, variables = _protect_numbers(result, variables)
-    
     result, variables = _merge_adjacent_placeholders(result, variables)
     
     return result, variables
@@ -182,6 +180,17 @@ def deep_tag_check(original, translated):
     translated_tags = extract_tags(translated)
     missing = set(source_tags) - set(translated_tags)
     return [f"Missing tag in translation: {tag}" for tag in sorted(missing)]
+
+
+def _recover_partial_json(content):
+    """LLM出力が途中で切断された場合、完了しているkey-valueペアのみ抽出する。"""
+    recovered = {}
+    pattern = r'"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"'
+    for match in re.finditer(pattern, content):
+        key = match.group(1)
+        value = match.group(2)
+        recovered[key] = value
+    return recovered
 
 
 def validate_translation(original, translated):
@@ -476,24 +485,32 @@ class TranslatorThread(QThread):
             f"you MUST keep their original left-to-right order. Do not swap or reorder adjacent placeholders.\n"
             f"4. Output ONLY the valid JSON object. No markdown formatting.\n\n"
             f"=== SYNTAX RULES ===\n"
-            f"5. English post-modifiers (relative clauses with 'which', 'that', 'who') MUST be restructured into {lang_english} pre-modifiers. "
-            f"Example: 'A sword which deals fire damage' → '{lang_english} equivalent with modifier before noun'.\n"
+            f"5. Restructure English relative clauses into {lang_english} pre-modifiers:\n"
+            f'   "A sword which deals fire damage" → "火ダメージを与える剣"\n'
+            f'   "The player who defeated the dragon" → "ドラゴンを倒したプレイヤー"\n'
+            f"   NEVER leave English-style post-modifiers as-is.\n"
             f"6. NEVER translate word-by-word. Read the full sentence first, understand its meaning in context, then produce a natural {lang_english} sentence with correct grammar and word order.\n\n"
+            f"=== STYLE RULES ===\n"
+            f"7. Use 常体 (だ・である調), NOT 敬体 (です・ます調). This matches the official Minecraft {lang_english} translation style.\n"
+            f'   Example: "Increases attack power" → "攻撃力が上がる", NOT "攻撃力が上がります"\n\n'
             f"=== CONTEXT & VOCABULARY RULES ===\n"
-            f"7. All text is from Minecraft mods, RPG games, or fantasy settings. Translate with this context in mind.\n"
-            f"8. Choose words that fit the game/fantasy context, not literal dictionary meanings:\n"
+            f"8. All text is from Minecraft mods, RPG games, or fantasy settings. Translate with this context in mind.\n"
+            f"9. Choose words that fit the game/fantasy context, not literal dictionary meanings:\n"
             f"   - 'Spiritual' in combat/magic context → mystic/divine/holy, NOT 'mental/psychological'\n"
             f"   - 'Throw' in attack/skill context → hurl/launch/cast, NOT 'toss away'\n"
             f"   - 'Spirit' in fantasy context → soul/phantom/aura, NOT 'enthusiasm'\n"
             f"   - 'Strike' in combat context → slash/smite/burst, NOT 'labor dispute'\n"
             f"   - Adapt all polysemous words to their in-game meaning, not the most common general meaning.\n"
-            f"9. Use established Minecraft/gaming terms consistently. Keep proper nouns as transliterations.\n"
-            f"10. Do NOT translate ONLY if the term is in the glossary below (keep glossary terms as-is).\n"
+            f"10. Use established Minecraft/gaming terms consistently. Keep proper nouns as transliterations.\n"
+            f"11. If a term appears in the glossary below, you MUST use the glossary translation exactly as specified.\n"
         )
 
         if self.glossary:
             batch_text_lower = " ".join([str(v) for v in unique_items.values()]).lower()
-            relevant_terms = {k: v for k, v in self.glossary.items() if k.lower() in batch_text_lower}
+            relevant_terms = {}
+            for k, v in self.glossary.items():
+                if re.search(r'\b' + re.escape(k.lower()) + r'\b', batch_text_lower):
+                    relevant_terms[k] = v
             
             if relevant_terms:
                 glossary_text = "\n".join([f"- {k}: {v}" for k, v in relevant_terms.items()])
@@ -532,7 +549,15 @@ class TranslatorThread(QThread):
         if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
             content = content[first_brace:last_brace + 1]
         
-        translated = json.loads(content)
+        try:
+            translated = json.loads(content)
+        except json.JSONDecodeError as e:
+            recovered = _recover_partial_json(content)
+            if recovered:
+                print(f"JSON parse failed ({e}), recovered {len(recovered)} of {len(protected_items)} items from partial response")
+                translated = recovered
+            else:
+                raise
         
         unique_results = {}
         for key, translated_text in translated.items():
