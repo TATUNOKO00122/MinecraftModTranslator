@@ -112,8 +112,9 @@ class TranslationEditCommand(QUndoCommand):
 
 
 class EditorWidget(QWidget):
-    translationChanged = Signal(int, int) # translated_count, total_count
-    searchAllModsRequested = Signal(str)  # search_text
+    translationChanged = Signal(int, int)
+    searchAllModsRequested = Signal(str)
+    selectionChanged = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -187,6 +188,7 @@ class EditorWidget(QWidget):
         v_header.setDefaultAlignment(Qt.AlignCenter)
         
         self.table.cellChanged.connect(self._on_cell_changed)
+        self.table.itemSelectionChanged.connect(self._on_selection_changed)
         
         self.translation_delegate = TranslationDelegate(self.table)
         self.table.setItemDelegateForColumn(2, self.translation_delegate)
@@ -411,9 +413,15 @@ class EditorWidget(QWidget):
         return visible
     
     def _on_search_all_mods_clicked(self):
-        """全MOD検索ボタンがクリックされたときにシグナルを発行"""
         search_text = self.search_input.text()
         self.searchAllModsRequested.emit(search_text)
+
+    def _on_selection_changed(self):
+        selected_rows = set()
+        for item in self.table.selectedItems():
+            selected_rows.add(item.row())
+        count = len(selected_rows)
+        self.selectionChanged.emit(count)
 
     def _toggle_diff_mode(self, checked):
         self.translation_delegate.set_diff_mode(checked)

@@ -14,7 +14,7 @@ from ui.editor_widget import EditorWidget
 from ui.settings_dialog import SettingsDialog
 from ui.glossary_dialog import GlossaryDialog
 from ui.term_extraction_dialog import TermExtractionDialog
-from logic.term_extractor import AITermExtractorThread
+from logic.term_extractor import AITermExtractorThread, extract_consistent_terms
 from logic.resource_pack_handler import ResourcePackImportThread
 
 class NoScrollListWidget(QListWidget):
@@ -182,6 +182,7 @@ class MainWindow(QMainWindow):
         self.editor.translate_btn.clicked.connect(self.start_auto_translate_all)
         self.editor.extract_terms_btn.clicked.connect(self.start_manual_term_extraction)
         self.editor.searchAllModsRequested.connect(self.search_all_mods)
+        self.editor.selectionChanged.connect(self._on_editor_selection_changed)
         right_layout.addWidget(self.editor)
         
         # Connect undo/redo toolbar actions
@@ -1216,9 +1217,9 @@ class MainWindow(QMainWindow):
         self.translation_errors = [] # Reset errors
         self.translation_start_time = None
         self.translation_total_items = len(items)
-        self.translation_original_items = items.copy()  # Store original items for term extraction
-        
-        # Get current MOD name for context
+        self.translation_original_items = items.copy()
+        self._partial_saved_keys = set()
+
         mod_name = None
         if self.current_mod_path and self.current_mod_path in self.loaded_mods:
             mod_name = self.loaded_mods[self.current_mod_path].get("name")
@@ -1315,6 +1316,15 @@ class MainWindow(QMainWindow):
             current_translations.update(partial_results)
             self.loaded_mods[self.current_mod_path]["translations"] = current_translations
 
+            new_results = {k: v for k, v in partial_results.items()
+                           if k not in self._partial_saved_keys}
+            if new_results:
+                self.editor.update_translations(new_results)
+                self._partial_saved_keys.update(new_results.keys())
+
+            saved_count = len(self._partial_saved_keys)
+            self.statusBar().showMessage(f"翻訳自動保存: {saved_count} 件保存済み", 3000)
+
     def on_validation_finished(self, validation_results):
         """Handle validation results from translator thread."""
         self.editor.update_translations({}, validation_results=validation_results)
@@ -1340,15 +1350,46 @@ class MainWindow(QMainWindow):
         self.editor.mark_reviewed(keys)
         self.statusBar().showMessage(f"{len(keys)} 件を確認済みにしました", 3000)
 
+    def _on_editor_selection_changed(self, count):
+        """エディタの選択変更時にステータスバーとツールチップを更新する。"""
+        if count > 0:
+            self.statusBar().showMessage(f"{count} 行選択中（右クリックで翻訳可能）")
+        else:
+            self.statusBar().showMessage("", 0)
+
 
     def start_auto_translate_all(self):
         if not self.current_mod_path: return
         
-        # 表示中の全項目を翻訳対象にする
         items = self.editor.get_visible_items()
         if not items:
             QMessageBox.information(self, "情報", "翻訳対象の項目がありません。")
             return
+        
+        current_translations = self.editor.get_translations()
+        already_count = sum(1 for k in items if k in current_translations and current_translations[k])
+        remaining = {k: v for k, v in items.items() if k not in current_translations or not current_translations.get(k)}
+        
+        if already_count > 0 and remaining:
+            resume = QMessageBox.question(
+                self, "翻訳済み項目",
+                f"前回の {already_count} 件は翻訳済みです。\n"
+                f"残り {len(remaining)} 件のみを翻訳しますか？\n\n"
+                "「はい」= 未翻訳のみ翻訳\n「いいえ」= 全て再翻訳",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+            )
+            if resume == QMessageBox.Yes:
+                items = remaining
+            elif resume == QMessageBox.Cancel:
+                return
+        elif already_count > 0 and not remaining:
+            retranslate = QMessageBox.question(
+                self, "全件翻訳済み",
+                f"全 {len(items)} 件は既に翻訳済みです。\n再翻訳しますか？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if retranslate != QMessageBox.Yes:
+                return
         
         char_count = sum(len(str(v)) for v in items.values())
         self._run_translation(items, 
@@ -1483,6 +1524,7 @@ class MainWindow(QMainWindow):
         self.translation_start_time = None
         self.translation_total_items = len(items)
         self.translation_original_items = items.copy()
+        self._partial_saved_keys = set()
         
         self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms, parallel_count,
                                                    target_lang=settings.get("target_lang", "ja_jp"))
@@ -1633,34 +1675,40 @@ class MainWindow(QMainWindow):
         self.editor.update_translations(results)
         
         if self.current_mod_path:
-             self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
-             self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
+            self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
+            self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
 
         self.progress_bar.hide()
-        self.stop_translation_btn.hide()  # Hide stop button
+        self.stop_translation_btn.hide()
         self.toolbar.setEnabled(True)
         self.editor.setEnabled(True)
         self.mod_list.setEnabled(True)
-        self.statusBar().showMessage("翻訳完了", 3000)  # Clear "translating" message
+        
+        result_count = len(results)
+        auto_saved = len(self._partial_saved_keys) if hasattr(self, '_partial_saved_keys') else 0
         
         if self.translation_errors:
             error_count = len(self.translation_errors)
-            # Show the first few errors
             details = "\n".join(self.translation_errors[:3])
             if error_count > 3:
                 details += f"\n...他 {error_count - 3} 件"
-                
-            QMessageBox.warning(self, "完了 (一部エラーあり)", 
+            QMessageBox.warning(self, "完了 (一部エラーあり)",
                                 f"自動翻訳は完了しましたが、{error_count} 件のエラーが発生しました。\n"
                                 f"エラーが発生した箇所は翻訳されていません。\n\n詳細:\n{details}")
         else:
             QMessageBox.information(self, "完了", "自動翻訳が完了しました！")
         
-        # Extract terms from color codes and show dialog
+        if auto_saved > 0:
+            self.statusBar().showMessage(f"翻訳完了: {result_count} 件（うち {auto_saved} 件を自動保存済み）", 5000)
+        else:
+            self.statusBar().showMessage(f"翻訳完了: {result_count} 件", 3000)
+        
+        self._show_local_term_suggestion(results)
         self._show_term_extraction_dialog(results)
         
         self.translator_thread = None
         self.translation_original_items = None
+        self._partial_saved_keys = set()
     
     def create_dictionary_from_all_mods(self):
         """Create dictionary from ALL loaded MODs, excluding quests."""
@@ -1761,7 +1809,37 @@ class MainWindow(QMainWindow):
         self.ai_extractor_thread.error.connect(self._on_ai_extraction_error)
         self.ai_extractor_thread.progress.connect(lambda msg: self.statusBar().showMessage(msg))
         self.ai_extractor_thread.start()
-
+    
+    def _show_local_term_suggestion(self, translated_items):
+        """翻訳完了後にローカルで一貫性のある用語を抽出し、辞書提案ダイアログを表示する。"""
+        if not hasattr(self, 'translation_original_items') or not self.translation_original_items:
+            return
+        
+        candidates = extract_consistent_terms(
+            self.translation_original_items,
+            translated_items,
+            self.glossary.get_terms()
+        )
+        
+        if not candidates:
+            return
+        
+        confirm = QMessageBox.question(
+            self, "用語の自動検出",
+            f"翻訳結果から {len(candidates)} 件の一貫した用語が見つかりました。\n"
+            f"辞書に追加しますか？\n\n"
+            + "\n".join(f"  {k} → {v}" for k, v in list(candidates.items())[:8])
+            + (f"\n  ...他 {len(candidates) - 8} 件" if len(candidates) > 8 else ""),
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if confirm == QMessageBox.Yes:
+            dialog = TermExtractionDialog(candidates, self.glossary, self)
+            if dialog.exec():
+                added_count = dialog.get_added_count()
+                if added_count > 0:
+                    self.statusBar().showMessage(f"{added_count} 件を辞書に追加しました", 5000)
+    
     def _show_term_extraction_dialog(self, translated_items):
         """Show dialog to ask if user wants AI term extraction."""
         if not hasattr(self, 'translation_original_items') or not self.translation_original_items:

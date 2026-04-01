@@ -281,3 +281,62 @@ Return a JSON object mapping English proper nouns to their Japanese translations
     def stop(self):
         self.is_running = False
 
+
+def extract_consistent_terms(original_items, translated_items, existing_glossary=None):
+    """
+    原文で2回以上出現し、訳文が一貫している用語を候補として抽出する（ローカル抽出、API不要）。
+    
+    Args:
+        original_items: dict of {key: original_text}
+        translated_items: dict of {key: translated_text}
+        existing_glossary: dict of existing glossary terms to exclude
+    
+    Returns:
+        dict of {original_term: translated_term}
+    """
+    if existing_glossary is None:
+        existing_glossary = {}
+    
+    orig_to_translations = defaultdict(list)
+    
+    for key, original in original_items.items():
+        if key in translated_items and translated_items[key]:
+            trans = translated_items[key]
+            if str(original) != str(trans):
+                orig_to_translations[str(original)].append(str(trans))
+    
+    candidates = {}
+    for original, translations in orig_to_translations.items():
+        if len(translations) < 2:
+            continue
+        
+        unique_trans = set(translations)
+        if len(unique_trans) != 1:
+            continue
+        
+        trans = translations[0]
+        
+        if original in existing_glossary:
+            continue
+        
+        stripped = original.strip()
+        if len(stripped) < 3:
+            continue
+        
+        if not re.search(r'[a-zA-Z]', stripped):
+            continue
+        
+        if len(stripped) > 60:
+            continue
+        
+        common_words = {'the', 'is', 'are', 'was', 'were', 'a', 'an', 'and', 'or',
+                        'of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from',
+                        'it', 'this', 'that', 'has', 'have', 'had', 'not', 'but'}
+        words = set(stripped.lower().split())
+        if words <= common_words:
+            continue
+        
+        candidates[original] = trans
+    
+    return candidates
+
