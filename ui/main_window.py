@@ -2,7 +2,7 @@ import os
 import json
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolBar, 
                                QFileDialog, QMessageBox, QLabel, QProgressBar, QMenu, QSplitter, QListWidget, QApplication)
-from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
 from PySide6.QtCore import Qt
 
 from logic.file_handler import FileHandler
@@ -75,6 +75,18 @@ class MainWindow(QMainWindow):
         open_action = QAction("開く", self)
         open_action.triggered.connect(self.open_file_dialog)
         self.toolbar.addAction(open_action)
+        
+        self.toolbar.addSeparator()
+        
+        self.undo_action = QAction("元に戻す", self)
+        self.undo_action.setShortcut(QKeySequence.Undo)
+        self.undo_action.setEnabled(False)
+        self.toolbar.addAction(self.undo_action)
+        
+        self.redo_action = QAction("やり直し", self)
+        self.redo_action.setShortcut(QKeySequence.Redo)
+        self.redo_action.setEnabled(False)
+        self.toolbar.addAction(self.redo_action)
         
         self.toolbar.addSeparator()
         
@@ -172,6 +184,12 @@ class MainWindow(QMainWindow):
         self.editor.searchAllModsRequested.connect(self.search_all_mods)
         right_layout.addWidget(self.editor)
         
+        # Connect undo/redo toolbar actions
+        self.undo_action.triggered.connect(self.editor.undo_stack.undo)
+        self.redo_action.triggered.connect(self.editor.undo_stack.redo)
+        self.editor.undo_stack.canUndoChanged.connect(self.undo_action.setEnabled)
+        self.editor.undo_stack.canRedoChanged.connect(self.redo_action.setEnabled)
+        
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(1, 4) # Make editor wider
 
@@ -207,6 +225,15 @@ class MainWindow(QMainWindow):
         progress_layout.addWidget(self.stop_translation_btn)
         
         main_layout.addLayout(progress_layout)
+        
+        self._setup_shortcuts()
+
+    def _setup_shortcuts(self):
+        save_shortcut = QShortcut(QKeySequence.Save, self)
+        save_shortcut.activated.connect(self._save_session)
+        
+        find_shortcut = QShortcut(QKeySequence.Find, self)
+        find_shortcut.activated.connect(lambda: self.editor.search_input.setFocus())
 
     def _check_previous_session(self):
         """Check if there's a previous session and ask to restore"""
@@ -772,10 +799,14 @@ class MainWindow(QMainWindow):
         )
         
         if confirm == QMessageBox.Yes:
+            self.editor._programmatic_update = True
             for row in selected_rows:
                 self.editor.table.item(row, 2).setText("")
+                self.editor._previous_cell_texts[(row, 2)] = ""
                 original = self.editor.table.item(row, 1).text()
                 self.editor._update_row_color(row, "", original)
+            self.editor._programmatic_update = False
+            self.editor.undo_stack.clear()
             self.editor._emit_stats()
             self.refresh_all_mod_colors()
             self.statusBar().showMessage(f"{len(selected_rows)} 行の翻訳をクリアしました", 3000)
@@ -793,11 +824,15 @@ class MainWindow(QMainWindow):
         )
         
         if confirm == QMessageBox.Yes:
+            self.editor._programmatic_update = True
             for row in range(self.editor.table.rowCount()):
                 self.editor.table.item(row, 2).setText("")
+                self.editor._previous_cell_texts[(row, 2)] = ""
                 original = self.editor.table.item(row, 1).text()
                 self.editor._update_row_color(row, "", original)
+            self.editor._programmatic_update = False
             mod_data["translations"] = {}
+            self.editor.undo_stack.clear()
             self.editor._emit_stats()
             self.refresh_all_mod_colors()
             self.statusBar().showMessage(f"翻訳をクリアしました", 3000)
@@ -825,10 +860,14 @@ class MainWindow(QMainWindow):
                 mod_data["translations"] = {}
             
             if self.current_mod_path and self.loaded_mods[self.current_mod_path].get("type") != "ftbquest":
+                self.editor._programmatic_update = True
                 for row in range(self.editor.table.rowCount()):
                     self.editor.table.item(row, 2).setText("")
+                    self.editor._previous_cell_texts[(row, 2)] = ""
                     original = self.editor.table.item(row, 1).text()
                     self.editor._update_row_color(row, "", original)
+                self.editor._programmatic_update = False
+                self.editor.undo_stack.clear()
                 self.editor._emit_stats()
             
             self.refresh_all_mod_colors()

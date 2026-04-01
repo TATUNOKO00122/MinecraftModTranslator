@@ -1,8 +1,45 @@
 import re
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
                                QTableWidgetItem, QHeaderView, QLineEdit, QPushButton, QLabel, QComboBox, QSizePolicy)
-from PySide6.QtGui import QColor, QBrush
+from PySide6.QtGui import QColor, QBrush, QUndoStack, QUndoCommand
 from PySide6.QtCore import Qt, Signal
+
+
+class TranslationEditCommand(QUndoCommand):
+    def __init__(self, table, row, old_text, new_text, editor):
+        super().__init__()
+        self.table = table
+        self.row = row
+        self.old_text = old_text
+        self.new_text = new_text
+        self.editor = editor
+        self._first_redo_done = False
+
+    def undo(self):
+        self.editor._programmatic_update = True
+        item = self.table.item(self.row, 2)
+        if item:
+            item.setText(self.old_text)
+            original = self.table.item(self.row, 1).text()
+            self.editor._update_row_color(self.row, self.old_text, original)
+        self.editor._previous_cell_texts[(self.row, 2)] = self.old_text
+        self.editor._programmatic_update = False
+        self.editor._emit_stats()
+
+    def redo(self):
+        if not self._first_redo_done:
+            self._first_redo_done = True
+            return
+        self.editor._programmatic_update = True
+        item = self.table.item(self.row, 2)
+        if item:
+            item.setText(self.new_text)
+            original = self.table.item(self.row, 1).text()
+            self.editor._update_row_color(self.row, self.new_text, original)
+        self.editor._previous_cell_texts[(self.row, 2)] = self.new_text
+        self.editor._programmatic_update = False
+        self.editor._emit_stats()
+
 
 class EditorWidget(QWidget):
     translationChanged = Signal(int, int) # translated_count, total_count
@@ -12,7 +49,11 @@ class EditorWidget(QWidget):
         super().__init__(parent)
         
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 15, 10, 10) 
+        layout.setContentsMargins(10, 15, 10, 10)
+        
+        self.undo_stack = QUndoStack(self)
+        self._programmatic_update = False
+        self._previous_cell_texts = {}
         
         # Toolbar
         toolbar = QHBoxLayout()
@@ -67,6 +108,8 @@ class EditorWidget(QWidget):
         v_header.setSectionResizeMode(QHeaderView.ResizeToContents)
         v_header.setDefaultAlignment(Qt.AlignCenter)
         
+        self.table.cellChanged.connect(self._on_cell_changed)
+        
         layout.addWidget(self.table)
         
         # Data
@@ -76,39 +119,67 @@ class EditorWidget(QWidget):
     def load_data(self, data):
         self.original_data = data
         self.translations = {}
+        self.undo_stack.clear()
+        self._previous_cell_texts.clear()
         self.populate_table()
         self._emit_stats()
 
+    def _on_cell_changed(self, row, col):
+        if col != 2 or self._programmatic_update:
+            return
+        
+        item = self.table.item(row, col)
+        if not item:
+            return
+        
+        new_text = item.text()
+        old_text = self._previous_cell_texts.get((row, col), "")
+        
+        self._previous_cell_texts[(row, col)] = new_text
+        
+        if new_text == old_text:
+            return
+        
+        cmd = TranslationEditCommand(self.table, row, old_text, new_text, self)
+        self.undo_stack.push(cmd)
+        
+        original = self.table.item(row, 1).text()
+        self._update_row_color(row, new_text, original)
+        self._emit_stats()
+
     def _emit_stats(self):
-        total = len(self.original_data)
-        # Count as translated if translation exists (including same as original)
-        translated = len([t for t in self.translations.values() if t])
+        total = self.table.rowCount() or len(self.original_data)
+        translated = 0
+        for i in range(self.table.rowCount()):
+            item = self.table.item(i, 2)
+            if item and item.text().strip():
+                translated += 1
         self.translationChanged.emit(translated, total)
         
     def populate_table(self):
+        self._programmatic_update = True
         self.table.setUpdatesEnabled(False)
         self.table.setRowCount(0)
         self.table.setRowCount(len(self.original_data))
         
         for i, (key, value) in enumerate(self.original_data.items()):
-            # Key
             key_item = QTableWidgetItem(key)
-            key_item.setFlags(key_item.flags() ^ Qt.ItemIsEditable) # Read-only
+            key_item.setFlags(key_item.flags() ^ Qt.ItemIsEditable)
             self.table.setItem(i, 0, key_item)
             
-            # Original
             orig_item = QTableWidgetItem(value)
-            orig_item.setFlags(orig_item.flags() ^ Qt.ItemIsEditable) # Read-only
+            orig_item.setFlags(orig_item.flags() ^ Qt.ItemIsEditable)
             self.table.setItem(i, 1, orig_item)
             
-            # Translation
             trans_text = self.translations.get(key, "")
             trans_item = QTableWidgetItem(trans_text)
             self.table.setItem(i, 2, trans_item)
             
+            self._previous_cell_texts[(i, 2)] = trans_text
             self._update_row_color(i, trans_text, value)
         
         self.table.setUpdatesEnabled(True)
+        self._programmatic_update = False
 
     def _update_row_color(self, row, translation, original):
         # If translated and different from original: green (fully translated)
@@ -183,22 +254,22 @@ class EditorWidget(QWidget):
         return result
 
     def update_translations(self, additional_translations):
+        self._programmatic_update = True
         self.translations.update(additional_translations)
-        # Block updates to prevent auto-scrolling
         self.table.setUpdatesEnabled(False)
         
-        # Update UI without full reload
         for i in range(self.table.rowCount()):
             key = self.table.item(i, 0).text()
             if key in additional_translations:
                 text = additional_translations[key]
                 self.table.item(i, 2).setText(text)
-                
-                # Update color
+                self._previous_cell_texts[(i, 2)] = text
                 original = self.table.item(i, 1).text()
                 self._update_row_color(i, text, original)
         
         self.table.setUpdatesEnabled(True)
+        self._programmatic_update = False
+        self.undo_stack.clear()
         self._emit_stats()
 
     def get_selected_items(self):
