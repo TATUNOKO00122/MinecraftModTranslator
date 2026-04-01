@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, Q
                                QFileDialog, QMessageBox, QLabel, QProgressBar, QMenu, QSplitter, QListWidget, QApplication,
                                QDialog, QDialogButtonBox)
 from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from logic.file_handler import FileHandler
 from logic.translator import TranslatorThread
@@ -34,6 +34,8 @@ class NoScrollListWidget(QListWidget):
 
 class MainWindow(QMainWindow):
     SESSION_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "session.json")
+    RECOVERY_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "recovery.json")
+    AUTOSAVE_INTERVAL_MS = 60000
     
     def __init__(self):
         super().__init__()
@@ -57,9 +59,15 @@ class MainWindow(QMainWindow):
         self.loaded_mods = {}
         self.current_mod_path = None
         self.translation_errors = []
+        self._dirty = False
+        
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.timeout.connect(self._autosave)
 
         self._setup_ui()
+        self._check_recovery_file()
         self._check_previous_session()
+        self._autosave_timer.start(self.AUTOSAVE_INTERVAL_MS)
 
     def _setup_ui(self):
         # Central Widget
@@ -187,6 +195,7 @@ class MainWindow(QMainWindow):
         self.editor.hide()
         self.editor.table.customContextMenuRequested.connect(self.show_context_menu)
         self.editor.translationChanged.connect(self.update_current_mod_stats)
+        self.editor.translationChanged.connect(self._mark_dirty)
         self.editor.translate_btn.clicked.connect(self.start_auto_translate_all)
         self.editor.extract_terms_btn.clicked.connect(self.start_manual_term_extraction)
         self.editor.searchAllModsRequested.connect(self.search_all_mods)
@@ -239,7 +248,7 @@ class MainWindow(QMainWindow):
 
     def _setup_shortcuts(self):
         save_shortcut = QShortcut(QKeySequence.Save, self)
-        save_shortcut.activated.connect(self._save_session)
+        save_shortcut.activated.connect(self._manual_save)
         
         find_shortcut = QShortcut(QKeySequence.Find, self)
         find_shortcut.activated.connect(lambda: self.editor.search_input.setFocus())
@@ -275,10 +284,34 @@ class MainWindow(QMainWindow):
                     self.process_path(path, silent=True)
                 self.progress_bar.hide()
                 self.statusBar().showMessage("セッション復元完了", 3000)
-                # Update SNBT button visibility after session restore
                 self._update_snbt_button_visibility()
+            
+            self._apply_recovery_translations()
         except:
             pass
+    
+    def _apply_recovery_translations(self):
+        if not hasattr(self, '_pending_recovery') or not self._pending_recovery:
+            self._cleanup_recovery()
+            return
+        
+        applied_count = 0
+        for path, recovery in self._pending_recovery.items():
+            if path in self.loaded_mods:
+                translations = recovery.get("translations", {})
+                review_status = recovery.get("review_status", {})
+                if translations:
+                    self.loaded_mods[path]["translations"].update(translations)
+                    self.loaded_mods[path]["review_status"].update(review_status)
+                    applied_count += len(translations)
+        
+        if applied_count > 0:
+            if self.current_mod_path and self.current_mod_path in self.loaded_mods:
+                self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
+            self.statusBar().showMessage(f"クラッシュ復旧: {applied_count} 件の翻訳を復元しました", 5000)
+        
+        del self._pending_recovery
+        self._cleanup_recovery()
     
     def _update_snbt_button_visibility(self):
         """Update SNBT button visibility based on loaded FTB quests."""
@@ -300,13 +333,94 @@ class MainWindow(QMainWindow):
         except:
             pass
 
+    def _manual_save(self):
+        self._autosave()
+        self._save_session()
+        self.statusBar().showMessage("保存しました", 3000)
+
+    def _mark_dirty(self, translated=None, total=None):
+        self._dirty = True
+
+    def _autosave(self):
+        if not self._dirty or not self.loaded_mods:
+            return
+        
+        if self.current_mod_path:
+            self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
+            self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
+        
+        self._save_recovery()
+        self._dirty = False
+
+    def _save_recovery(self):
+        try:
+            recovery_data = {}
+            for path, mod_data in self.loaded_mods.items():
+                recovery_data[path] = {
+                    "name": mod_data.get("name", ""),
+                    "translations": mod_data.get("translations", {}),
+                    "review_status": mod_data.get("review_status", {}),
+                }
+            with open(self.RECOVERY_FILE, 'w', encoding='utf-8') as f:
+                json.dump(recovery_data, f, ensure_ascii=False)
+        except:
+            pass
+
+    def _cleanup_recovery(self):
+        try:
+            if os.path.exists(self.RECOVERY_FILE):
+                os.remove(self.RECOVERY_FILE)
+        except:
+            pass
+
+    def _check_recovery_file(self):
+        if not os.path.exists(self.RECOVERY_FILE):
+            return
+        
+        try:
+            with open(self.RECOVERY_FILE, 'r', encoding='utf-8') as f:
+                recovery_data = json.load(f)
+            
+            if not recovery_data:
+                self._cleanup_recovery()
+                return
+            
+            mod_count = len(recovery_data)
+            total_keys = sum(len(v.get("translations", {})) for v in recovery_data.values())
+            
+            confirm = QMessageBox.question(
+                self, "クラッシュ復旧",
+                f"前回の予期せぬ終了時に {mod_count} 個のMOD、{total_keys} 件の翻訳データが\n"
+                "自動保存されていました。\n\n復元しますか？\n\n"
+                "※ 復元しない場合、自動保存データは破棄されます。",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if confirm == QMessageBox.Yes:
+                self._pending_recovery = recovery_data
+        except:
+            self._cleanup_recovery()
+
     def closeEvent(self, event):
-        """Save session on close"""
+        """Save session on close with unsaved changes check"""
+        if hasattr(self, 'translator_thread') and self.translator_thread and self.translator_thread.isRunning():
+            confirm = QMessageBox.question(
+                self, "翻訳中",
+                "翻訳が実行中です。\n終了すると未完了の翻訳は失われます。\n\n終了しますか？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if confirm == QMessageBox.No:
+                event.ignore()
+                return
+            self.translator_thread.stop()
+        
         if self.current_mod_path:
             self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
             self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
         
         self._save_session()
+        self._cleanup_recovery()
+        self._autosave_timer.stop()
         event.accept()
 
     # --- Logic ---
@@ -1618,17 +1732,40 @@ class MainWindow(QMainWindow):
         self._partial_saved_keys = set()
         
         self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms, parallel_count,
+                                                   memory=self.memory, mod_name="(batch)",
                                                    target_lang=settings.get("target_lang", "ja_jp"))
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self._on_batch_translate_finished)
         self.translator_thread.stopped.connect(self._on_batch_translate_stopped)
         self.translator_thread.error.connect(self.on_translation_error)
+        self.translator_thread.partial_save.connect(self._on_batch_partial_save)
         self.translator_thread.validation_finished.connect(self.on_validation_finished)
         self.translator_thread.start()
         
         # Show immediate feedback
         self.statusBar().showMessage(f"翻訳中... 0/{len(items)} (APIリクエスト中...)")
         QApplication.processEvents()
+
+    def _on_batch_partial_save(self, partial_results):
+        if not partial_results or not hasattr(self, '_batch_translate_mod_paths') or not self._batch_translate_mod_paths:
+            return
+        
+        for mod_path in self._batch_translate_mod_paths:
+            mod_data = self.loaded_mods[mod_path]
+            original = mod_data["original"]
+            for key in original.keys():
+                if key in partial_results:
+                    mod_data["translations"][key] = partial_results[key]
+        
+        if self.current_mod_path in self._batch_translate_mod_paths:
+            new_results = {k: v for k, v in partial_results.items()
+                           if k not in self._partial_saved_keys and k in self.loaded_mods[self.current_mod_path]["original"]}
+            if new_results:
+                self.editor.update_translations(new_results)
+                self._partial_saved_keys.update(new_results.keys())
+        
+        saved_count = len(self._partial_saved_keys)
+        self.statusBar().showMessage(f"一括翻訳自動保存: {saved_count} 件保存済み", 3000)
 
     def _on_batch_translate_finished(self, results):
         """Handle batch translation completion."""

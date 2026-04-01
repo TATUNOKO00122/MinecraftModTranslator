@@ -339,6 +339,7 @@ class TranslatorThread(QThread):
         else:
             self._run_parallel(batches, results, validation_results, total_items)
             if not self.is_running:
+                self._progressive_save(results, {})
                 self.stopped.emit(results)
                 return
 
@@ -349,6 +350,7 @@ class TranslatorThread(QThread):
     def _run_parallel(self, batches, results, validation_results, total_items):
         processed = 0
         current_parallel = self.parallel_count
+        batches_since_save = 0
         
         batch_index = 0
         while batch_index < len(batches):
@@ -387,6 +389,11 @@ class TranslatorThread(QThread):
                     
                     processed += len(batch_items)
                     self.progress.emit(processed, total_items)
+                    batches_since_save += 1
+            
+            if batches_since_save >= self.save_interval:
+                self._progressive_save(results, {})
+                batches_since_save = 0
             
             batch_index = chunk_end
             
