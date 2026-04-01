@@ -9,6 +9,8 @@ from logic.file_handler import TARGET_LANGUAGES
 
 
 VARIABLE_PATTERNS = [
+    r'\[calc:[a-zA-Z0-9_]+\]',        # [calc:blessed_hammer], [calc:damage]
+    r'\[[a-zA-Z0-9_]+\]',             # [entity], [item], [tag], etc.
     r'\{[a-zA-Z_][a-zA-Z0-9_]*\}',   # {player}, {name}, {item}
     r'\{[0-9]+\}',                    # {0}, {1}, {2}
     r'\{[0-9]+\$[sdf]\}',             # {0$s}, {1$d}, {2$f}
@@ -16,6 +18,7 @@ VARIABLE_PATTERNS = [
     r'%%',                            # Escaped percent
     r'§[0-9a-fk-or]',                 # Minecraft color codes §a, §r, §l, etc.
     r'&[0-9a-fk-or]',                 # Alternate color codes &a, &r, etc.
+    r'[☀⚔❤✦✧★☆➤►▸●◆◇▲▼✹❂❃❄✴✵✶]',    # Game UI decorative symbols
     r'\\n',                           # Newline escape
     r'<br\s*/?>',                     # HTML line breaks
 ]
@@ -35,18 +38,44 @@ def protect_variables(text):
     variables = []
     result = text
     
-    # Find and replace all variables with unique placeholders
     for pattern in COMPILED_PATTERNS:
         matches = list(pattern.finditer(result))
-        # Process matches in reverse order to preserve indices
-        for match in reversed(matches):
-            var = match.group()
-            # Check if this exact position hasn't been replaced yet
+        if not matches:
+            continue
+        
+        replacements = []
+        for match in matches:
             placeholder = f"__VAR_{len(variables)}__"
-            result = result[:match.start()] + placeholder + result[match.end():]
-            variables.insert(0, var)  # Insert at beginning since we're going in reverse
+            variables.append(match.group())
+            replacements.append((match.start(), match.end(), placeholder))
+        
+        for start, end, placeholder in reversed(replacements):
+            result = result[:start] + placeholder + result[end:]
+    
+    result, variables = _merge_adjacent_placeholders(result, variables)
     
     return result, variables
+
+
+def _merge_adjacent_placeholders(text, variables):
+    """隣接する __VAR_N__ を単一プレースホルダに統合し、LLMによる順序入れ替えを防止する。"""
+    merged = []
+    var_ref = re.compile(r'__VAR_(\d+)__')
+    
+    def replacer(m):
+        parts = []
+        last_end = 0
+        full = m.group()
+        for vm in var_ref.finditer(full):
+            if vm.start() > last_end:
+                parts.append(full[last_end:vm.start()])
+            parts.append(variables[int(vm.group(1))])
+            last_end = vm.end()
+        merged.append(''.join(parts))
+        return f'__VAR_{len(merged) - 1}__'
+    
+    result = re.sub(r'__VAR_\d+__(?:\s*__VAR_\d+__)*', replacer, text)
+    return result, merged
 
 
 def restore_variables(text, variables):
@@ -350,16 +379,29 @@ class TranslatorThread(QThread):
         lang_english = lang_info[0]
         
         system_content = (
-            f"You are a professional translator for Minecraft mods. "
+            f"You are a professional translator for Minecraft mods and RPG games.\n"
             f"Your task is to translate English text into natural {lang_english}.\n"
-            f"You will receive a JSON object. The keys are identifiers (DO NOT CHANGE KEYS). The values are the English text to translate.\n"
-            f"Rules:\n"
+            f"You will receive a JSON object. The keys are identifiers (DO NOT CHANGE KEYS). The values are the English text to translate.\n\n"
+            f"=== FORMAT RULES ===\n"
             f"1. Translate the value of each key from English to {lang_english}.\n"
             f"2. CRITICAL: Keep ALL placeholders like __VAR_0__, __VAR_1__ EXACTLY as they are. DO NOT modify, translate, or remove them.\n"
-            f"3. Use established Minecraft/gaming terms consistently. "
-            f"Translate descriptively into natural {lang_english}, keeping proper nouns as transliterations.\n"
-            f"4. Do NOT translate ONLY if the term is in the glossary below (keep glossary terms as-is).\n"
-            f"5. Output ONLY the valid JSON object. Do not include markdown formatting (```json ... ```)."
+            f"3. CRITICAL: When multiple __VAR_N__ placeholders appear near each other, "
+            f"you MUST keep their original left-to-right order. Do not swap or reorder adjacent placeholders.\n"
+            f"4. Output ONLY the valid JSON object. No markdown formatting.\n\n"
+            f"=== SYNTAX RULES ===\n"
+            f"5. English post-modifiers (relative clauses with 'which', 'that', 'who') MUST be restructured into {lang_english} pre-modifiers. "
+            f"Example: 'A sword which deals fire damage' → '{lang_english} equivalent with modifier before noun'.\n"
+            f"6. NEVER translate word-by-word. Read the full sentence first, understand its meaning in context, then produce a natural {lang_english} sentence with correct grammar and word order.\n\n"
+            f"=== CONTEXT & VOCABULARY RULES ===\n"
+            f"7. All text is from Minecraft mods, RPG games, or fantasy settings. Translate with this context in mind.\n"
+            f"8. Choose words that fit the game/fantasy context, not literal dictionary meanings:\n"
+            f"   - 'Spiritual' in combat/magic context → mystic/divine/holy, NOT 'mental/psychological'\n"
+            f"   - 'Throw' in attack/skill context → hurl/launch/cast, NOT 'toss away'\n"
+            f"   - 'Spirit' in fantasy context → soul/phantom/aura, NOT 'enthusiasm'\n"
+            f"   - 'Strike' in combat context → slash/smite/burst, NOT 'labor dispute'\n"
+            f"   - Adapt all polysemous words to their in-game meaning, not the most common general meaning.\n"
+            f"9. Use established Minecraft/gaming terms consistently. Keep proper nouns as transliterations.\n"
+            f"10. Do NOT translate ONLY if the term is in the glossary below (keep glossary terms as-is).\n"
         )
 
         if self.glossary:
@@ -398,6 +440,13 @@ class TranslatorThread(QThread):
             content = content[3:]
         if content.endswith("```"):
             content = content[:-3]
+        content = content.strip()
+        
+        # Extract JSON object from surrounding natural language
+        first_brace = content.find('{')
+        last_brace = content.rfind('}')
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            content = content[first_brace:last_brace + 1]
         
         translated = json.loads(content)
         
