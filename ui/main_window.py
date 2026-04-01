@@ -82,12 +82,6 @@ class MainWindow(QMainWindow):
         self.addToolBar(self.toolbar)
         
         # Toolbar Actions
-        open_action = QAction("開く", self)
-        open_action.triggered.connect(self.open_file_dialog)
-        self.toolbar.addAction(open_action)
-        
-        self.toolbar.addSeparator()
-        
         self.undo_action = QAction("元に戻す", self)
         self.undo_action.setShortcut(QKeySequence.Undo)
         self.undo_action.setEnabled(False)
@@ -1285,40 +1279,6 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "エラー", f"リソースパック読込に失敗: {message}")
         self.rp_thread = None
 
-    def open_file_dialog(self):
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("開く")
-        msg_box.setText("何を開きますか？")
-        btn_file = msg_box.addButton("MODファイル", QMessageBox.AcceptRole)
-        btn_folder = msg_box.addButton("Minecraftディレクトリ", QMessageBox.ActionRole)
-        btn_datapack = msg_box.addButton("データパック", QMessageBox.ActionRole)
-        msg_box.addButton("キャンセル", QMessageBox.RejectRole)
-        msg_box.exec()
-        
-        if msg_box.clickedButton() == btn_file:
-            file_paths, _ = QFileDialog.getOpenFileNames(
-                self, "MODファイルを開く", "", "MODファイル (*.zip *.jar);;すべてのファイル (*)"
-            )
-            for path in file_paths:
-                self.process_path(path)
-        elif msg_box.clickedButton() == btn_folder:
-            folder_path = QFileDialog.getExistingDirectory(
-                self, "Minecraftディレクトリを開く"
-            )
-            if folder_path:
-                self.process_path(folder_path)
-        elif msg_box.clickedButton() == btn_datapack:
-            folder_path = QFileDialog.getExistingDirectory(
-                self, "データパックフォルダを選択"
-            )
-            if folder_path:
-                if datapack_handler.detect_datapack(folder_path):
-                    self.load_datapack(folder_path)
-                else:
-                    QMessageBox.warning(self, "エラー",
-                        "選択したフォルダはデータパックではありません。\n"
-                        "pack.mcmeta と data/ フォルダが必要です。")
-
     def load_source(self, path):
         if path in self.loaded_mods:
             return
@@ -1420,7 +1380,6 @@ class MainWindow(QMainWindow):
         glossary_terms = self.glossary.get_terms()
         parallel_count = settings.get("parallel_count", 3)
         self.translation_errors = [] # Reset errors
-        self.translation_start_time = None
         self.translation_total_items = len(items)
         self.translation_original_items = items.copy()
         self._partial_saved_keys = set()
@@ -1448,29 +1407,8 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
     def on_translation_progress(self, value, total=None):
-        import time
-        
-        if self.translation_start_time is None:
-            self.translation_start_time = time.time()
-        
         self.progress_bar.setValue(value)
-        
-        if value > 0:
-            elapsed = time.time() - self.translation_start_time
-            avg_per_item = elapsed / value
-            remaining_items = self.translation_total_items - value
-            eta_seconds = int(avg_per_item * remaining_items)
-            
-            if eta_seconds >= 60:
-                eta_min = eta_seconds // 60
-                eta_sec = eta_seconds % 60
-                eta_str = f"{eta_min}分{eta_sec}秒"
-            else:
-                eta_str = f"{eta_seconds}秒"
-            
-            self.statusBar().showMessage(f"翻訳中... {value}/{self.translation_total_items} (残り約 {eta_str})")
-        
-        # Force UI update
+        self.statusBar().showMessage(f"翻訳中... {value}/{self.translation_total_items}")
         QApplication.processEvents()
 
     def on_translation_error(self, message):
@@ -1726,7 +1664,6 @@ class MainWindow(QMainWindow):
         glossary_terms = self.glossary.get_terms()
         parallel_count = settings.get("parallel_count", 3)
         self.translation_errors = []
-        self.translation_start_time = None
         self.translation_total_items = len(items)
         self.translation_original_items = items.copy()
         self._partial_saved_keys = set()
