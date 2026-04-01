@@ -1,5 +1,6 @@
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, 
-                               QTableWidgetItem, QPushButton, QHeaderView, QMessageBox, QFileDialog)
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTableWidget,
+                                QTableWidgetItem, QPushButton, QHeaderView, QMessageBox,
+                                QFileDialog, QLabel, QLineEdit)
 from PySide6.QtCore import Qt
 import json
 
@@ -13,8 +14,16 @@ class GlossaryDialog(QDialog):
         self.resize(600, 450) # Increased height slightly
         
         self.layout = QVBoxLayout(self)
-        
-        # Table
+
+        search_layout = QHBoxLayout()
+        search_label = QLabel("検索:")
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("原文または訳文で絞り込み...")
+        self.search_input.textChanged.connect(self._filter_table)
+        search_layout.addWidget(search_label)
+        search_layout.addWidget(self.search_input)
+        self.layout.addLayout(search_layout)
+
         self.table = QTableWidget()
         self.table.setColumnCount(2)
         self.table.setHorizontalHeaderLabels(["原文 (英語)", "訳文 (日本語)"])
@@ -173,8 +182,20 @@ class GlossaryDialog(QDialog):
             if key_item and val_item:
                 key = key_item.text().strip()
                 val = val_item.text().strip()
-                if key: # Ignore empty keys
+                if key:
                     new_terms[key] = val
         
         self.glossary.set_terms(new_terms)
         self.accept()
+
+    def _filter_table(self, text):
+        query = text.lower().strip()
+        for row in range(self.table.rowCount()):
+            if not query:
+                self.table.setRowHidden(row, False)
+                continue
+            key_item = self.table.item(row, 0)
+            val_item = self.table.item(row, 1)
+            key = key_item.text().lower() if key_item else ""
+            val = val_item.text().lower() if val_item else ""
+            self.table.setRowHidden(row, query not in key and query not in val)

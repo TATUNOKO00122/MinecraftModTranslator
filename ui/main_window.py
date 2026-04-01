@@ -272,7 +272,7 @@ class MainWindow(QMainWindow):
                     self.statusBar().showMessage(f"復元中... ({i+1}/{len(valid_paths)})")
                     self.progress_bar.setValue(i + 1)
                     QApplication.processEvents()
-                    self.process_path(path)
+                    self.process_path(path, silent=True)
                 self.progress_bar.hide()
                 self.statusBar().showMessage("セッション復元完了", 3000)
                 # Update SNBT button visibility after session restore
@@ -905,7 +905,7 @@ class MainWindow(QMainWindow):
         for f in files:
             self.process_path(f)
     
-    def process_path(self, path):
+    def process_path(self, path, silent=False):
         """Process a path: Minecraft folder, MOD, FTB Quest, datapack, or resource pack"""
         if os.path.isdir(path):
             ftbquest_folder = ftbquest_handler.detect_ftbquests(path)
@@ -932,7 +932,6 @@ class MainWindow(QMainWindow):
                     self.progress_bar.hide()
                     loaded_items.append(f"MOD {len(mod_files)}個")
 
-            # Datapack scan in openloader/config directories
             openloader_dir = os.path.join(path, "config", "openloader", "data")
             if os.path.isdir(openloader_dir):
                 dp_dirs = [
@@ -944,14 +943,13 @@ class MainWindow(QMainWindow):
                     self.load_datapack(dp_dir, mods_dir=mods_folder)
                     loaded_items.append(f"データパック: {os.path.basename(dp_dir)}")
 
-            # Also check if the path itself is a datapack
             if not loaded_items and datapack_handler.detect_datapack(path):
                 self.load_datapack(path)
                 loaded_items.append("データパック")
             
             self.statusBar().showMessage("読み込み完了", 3000)
             
-            if loaded_items:
+            if loaded_items and not silent:
                 QMessageBox.information(self, "読み込み完了", 
                     f"読み込み完了: {', '.join(loaded_items)}")
                 return

@@ -205,7 +205,7 @@ class TermExtractionDialog(QDialog):
 
 
 class FrequentTermTranslateThread(QThread):
-    """頻出語の仮翻訳をAIで行うスレッド。"""
+    """頻出語のAI翻訳を行うスレッド。"""
 
     finished = Signal(dict)
     error = Signal(str)
@@ -220,7 +220,7 @@ class FrequentTermTranslateThread(QThread):
 
     def run(self):
         try:
-            self.progress.emit("AIで仮翻訳を生成中...")
+            self.progress.emit("AI翻訳を生成中...")
 
             terms_list = list(self.terms)
             batch_size = 50
@@ -232,7 +232,7 @@ class FrequentTermTranslateThread(QThread):
 
                 batch = terms_list[i:i + batch_size]
                 self.progress.emit(
-                    f"AIで仮翻訳を生成中... ({i + len(batch)}/{len(terms_list)})"
+                    f"AI翻訳を生成中... ({i + len(batch)}/{len(terms_list)})"
                 )
 
                 translations = self._translate_batch(batch)
@@ -414,13 +414,19 @@ class FrequentTermDialog(QDialog):
 
         select_layout.addStretch()
 
-        self.ai_translate_btn = QPushButton("AIで仮翻訳")
-        self.ai_translate_btn.setToolTip("AIで選択項目の仮訳文を生成します")
+        self.ai_translate_btn = QPushButton("AI翻訳")
+        self.ai_translate_btn.setToolTip("AIで選択項目の訳文を生成します")
         self.ai_translate_btn.clicked.connect(self._start_ai_translate)
         if not self._api_key or not self._freq_model:
             self.ai_translate_btn.setEnabled(False)
             self.ai_translate_btn.setToolTip("API設定が必要です")
         select_layout.addWidget(self.ai_translate_btn)
+
+        self.stop_translate_btn = QPushButton("停止")
+        self.stop_translate_btn.setToolTip("AI翻訳を中止します")
+        self.stop_translate_btn.clicked.connect(self._stop_ai_translate)
+        self.stop_translate_btn.setEnabled(False)
+        select_layout.addWidget(self.stop_translate_btn)
 
         layout.addLayout(select_layout)
 
@@ -485,7 +491,7 @@ class FrequentTermDialog(QDialog):
             return
 
         self.ai_translate_btn.setEnabled(False)
-        self.ai_translate_btn.setText("翻訳中...")
+        self.stop_translate_btn.setEnabled(True)
 
         self._translate_thread = FrequentTermTranslateThread(
             terms_to_translate, self._api_key, self._freq_model
@@ -497,9 +503,16 @@ class FrequentTermDialog(QDialog):
         )
         self._translate_thread.start()
 
+    def _stop_ai_translate(self):
+        self._cleanup_thread()
+        self.ai_translate_btn.setEnabled(True)
+        self.ai_translate_btn.setText("AI翻訳")
+        self.stop_translate_btn.setEnabled(False)
+
     def _on_translate_finished(self, translations):
         self.ai_translate_btn.setEnabled(True)
-        self.ai_translate_btn.setText("AIで仮翻訳")
+        self.ai_translate_btn.setText("AI翻訳")
+        self.stop_translate_btn.setEnabled(False)
         self._cleanup_thread()
 
         applied = 0
@@ -516,7 +529,7 @@ class FrequentTermDialog(QDialog):
         if applied > 0:
             QMessageBox.information(
                 self, "完了",
-                f"{applied} 件の仮翻訳を適用しました。\n"
+                f"{applied} 件のAI翻訳を適用しました。\n"
                 "内容を確認してから辞書に追加してください。"
             )
         else:
@@ -524,7 +537,8 @@ class FrequentTermDialog(QDialog):
 
     def _on_translate_error(self, error_msg):
         self.ai_translate_btn.setEnabled(True)
-        self.ai_translate_btn.setText("AIで仮翻訳")
+        self.ai_translate_btn.setText("AI翻訳")
+        self.stop_translate_btn.setEnabled(False)
         self._cleanup_thread()
         QMessageBox.warning(self, "エラー", f"AI翻訳に失敗しました:\n{error_msg}")
 
