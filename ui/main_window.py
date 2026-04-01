@@ -15,7 +15,7 @@ from ui.editor_widget import EditorWidget
 from ui.settings_dialog import SettingsDialog
 from ui.glossary_dialog import GlossaryDialog
 from ui.term_extraction_dialog import TermExtractionDialog
-from logic.term_extractor import AITermExtractorThread, extract_consistent_terms
+from logic.term_extractor import AITermExtractorThread, extract_all_term_candidates
 from logic.resource_pack_handler import ResourcePackImportThread
 
 class NoScrollListWidget(QListWidget):
@@ -1898,34 +1898,28 @@ class MainWindow(QMainWindow):
         self.ai_extractor_thread.start()
     
     def _show_local_term_suggestion(self, translated_items):
-        """翻訳完了後にローカルで一貫性のある用語を抽出し、辞書提案ダイアログを表示する。"""
+        """翻訳完了後にローカルで一貫性のある用語と翻訳ブレを抽出し、辞書提案ダイアログを表示する。"""
         if not hasattr(self, 'translation_original_items') or not self.translation_original_items:
             return
         
-        candidates = extract_consistent_terms(
+        consistent, inconsistent = extract_all_term_candidates(
             self.translation_original_items,
             translated_items,
             self.glossary.get_terms()
         )
         
-        if not candidates:
+        total = len(consistent) + len(inconsistent)
+        if total == 0:
             return
         
-        confirm = QMessageBox.question(
-            self, "用語の自動検出",
-            f"翻訳結果から {len(candidates)} 件の一貫した用語が見つかりました。\n"
-            f"辞書に追加しますか？\n\n"
-            + "\n".join(f"  {k} → {v}" for k, v in list(candidates.items())[:8])
-            + (f"\n  ...他 {len(candidates) - 8} 件" if len(candidates) > 8 else ""),
-            QMessageBox.Yes | QMessageBox.No
+        dialog = TermExtractionDialog(
+            consistent, self.glossary, self,
+            inconsistent_terms=inconsistent
         )
-        
-        if confirm == QMessageBox.Yes:
-            dialog = TermExtractionDialog(candidates, self.glossary, self)
-            if dialog.exec():
-                added_count = dialog.get_added_count()
-                if added_count > 0:
-                    self.statusBar().showMessage(f"{added_count} 件を辞書に追加しました", 5000)
+        if dialog.exec():
+            added_count = dialog.get_added_count()
+            if added_count > 0:
+                self.statusBar().showMessage(f"{added_count} 件を辞書に追加しました", 5000)
     
     def _show_term_extraction_dialog(self, translated_items):
         """Show dialog to ask if user wants AI term extraction."""

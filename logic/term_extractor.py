@@ -1,5 +1,5 @@
 import re
-from collections import defaultdict
+from collections import defaultdict, Counter
 import requests
 import json
 from PySide6.QtCore import QThread, Signal
@@ -282,61 +282,85 @@ Return a JSON object mapping English proper nouns to their Japanese translations
         self.is_running = False
 
 
-def extract_consistent_terms(original_items, translated_items, existing_glossary=None):
+_COMMON_WORDS = frozenset({
+    'the', 'is', 'are', 'was', 'were', 'a', 'an', 'and', 'or',
+    'of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from',
+    'it', 'this', 'that', 'has', 'have', 'had', 'not', 'but',
+})
+
+
+def _is_valid_term(text, existing_glossary):
+    stripped = text.strip()
+    if len(stripped) < 3 or len(stripped) > 60:
+        return False
+    if not re.search(r'[a-zA-Z]', stripped):
+        return False
+    if text in existing_glossary:
+        return False
+    words = set(stripped.lower().split())
+    if words <= _COMMON_WORDS:
+        return False
+    return True
+
+
+def extract_all_term_candidates(original_items, translated_items, existing_glossary=None):
     """
-    原文で2回以上出現し、訳文が一貫している用語を候補として抽出する（ローカル抽出、API不要）。
-    
+    一貫した用語と翻訳ブレのある用語を両方抽出する（ローカル、API不要）。
+
     Args:
         original_items: dict of {key: original_text}
         translated_items: dict of {key: translated_text}
         existing_glossary: dict of existing glossary terms to exclude
-    
+
     Returns:
-        dict of {original_term: translated_term}
+        tuple: (consistent_terms, inconsistent_terms)
+            consistent_terms: dict[str, str] - {original: translation}
+            inconsistent_terms: dict[str, dict] -
+                {original: {"most_common": str, "all": [str], "count": int}}
     """
     if existing_glossary is None:
         existing_glossary = {}
-    
+
     orig_to_translations = defaultdict(list)
-    
+
     for key, original in original_items.items():
         if key in translated_items and translated_items[key]:
             trans = translated_items[key]
             if str(original) != str(trans):
                 orig_to_translations[str(original)].append(str(trans))
-    
-    candidates = {}
+
+    consistent = {}
+    inconsistent = {}
+
     for original, translations in orig_to_translations.items():
         if len(translations) < 2:
             continue
-        
+        if not _is_valid_term(original, existing_glossary):
+            continue
+
         unique_trans = set(translations)
-        if len(unique_trans) != 1:
-            continue
-        
-        trans = translations[0]
-        
-        if original in existing_glossary:
-            continue
-        
-        stripped = original.strip()
-        if len(stripped) < 3:
-            continue
-        
-        if not re.search(r'[a-zA-Z]', stripped):
-            continue
-        
-        if len(stripped) > 60:
-            continue
-        
-        common_words = {'the', 'is', 'are', 'was', 'were', 'a', 'an', 'and', 'or',
-                        'of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from',
-                        'it', 'this', 'that', 'has', 'have', 'had', 'not', 'but'}
-        words = set(stripped.lower().split())
-        if words <= common_words:
-            continue
-        
-        candidates[original] = trans
-    
-    return candidates
+
+        if len(unique_trans) == 1:
+            consistent[original] = translations[0]
+        else:
+            counter = Counter(translations)
+            most_common = counter.most_common(1)[0][0]
+            inconsistent[original] = {
+                "most_common": most_common,
+                "all": sorted(unique_trans),
+                "count": len(translations),
+            }
+
+    return consistent, inconsistent
+
+
+def extract_consistent_terms(original_items, translated_items, existing_glossary=None):
+    """
+    原文で2回以上出現し、訳文が一貫している用語を候補として抽出する（ローカル抽出、API不要）。
+    後方互換ラッパー。新規コードでは extract_all_term_candidates を使用してください。
+    """
+    consistent, _ = extract_all_term_candidates(
+        original_items, translated_items, existing_glossary
+    )
+    return consistent
 
