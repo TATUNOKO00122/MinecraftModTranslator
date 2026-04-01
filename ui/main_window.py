@@ -2526,9 +2526,8 @@ class MainWindow(QMainWindow):
             self, "SNBT適用確認",
             f"{len(ftb_mods)} 件のFTBクエストのSNBTファイルを変換します。\n"
             "元のファイルは .backup_日時 としてバックアップされます。\n\n"
-            "⚠️ 注意: 翻訳キーはフォルダ名から生成されます。\n"
-            "フォルダ名を変更すると、リソースパックのインポート時に\n"
-            "キーが一致しなくなります。\n\n"
+            "翻訳キーはSNBT内のIDフィールドを使用するため、\n"
+            "フォルダ名の変更に影響されません。\n\n"
             "続行しますか？",
             QMessageBox.Yes | QMessageBox.No
         )
