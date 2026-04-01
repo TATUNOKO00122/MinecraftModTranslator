@@ -295,6 +295,7 @@ class MainWindow(QMainWindow):
         """Save session on close"""
         if self.current_mod_path:
             self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
+            self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
         
         self._save_session()
         event.accept()
@@ -310,6 +311,7 @@ class MainWindow(QMainWindow):
             prev_path = previous.data(Qt.UserRole)
             if prev_path in self.loaded_mods:
                 self.loaded_mods[prev_path]["translations"] = self.editor.get_translations()
+                self.loaded_mods[prev_path]["review_status"] = self.editor.review_status.copy()
 
         # Load current
         if current:
@@ -320,10 +322,10 @@ class MainWindow(QMainWindow):
             self.mod_label.hide()
             self.editor.show()
             
-            # Load data into editor
             self.editor.load_data(mod_data["original"])
             
-            # Restore translations
+            self.editor.review_status = mod_data.get("review_status", {})
+            
             self.editor.update_translations(mod_data["translations"])
             
             # Re-apply filter if active
@@ -648,6 +650,12 @@ class MainWindow(QMainWindow):
         clear_all_action = QAction("全MOD (クエスト除く)", self)
         clear_all_action.triggered.connect(self.clear_all_mod_translations)
         clear_menu.addAction(clear_all_action)
+        
+        menu.addSeparator()
+        
+        mark_reviewed_action = QAction("確認済みにする", self)
+        mark_reviewed_action.triggered.connect(self.mark_selected_reviewed)
+        menu.addAction(mark_reviewed_action)
         
         menu.exec(self.editor.table.mapToGlobal(pos))
 
@@ -1218,9 +1226,10 @@ class MainWindow(QMainWindow):
         )
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self.on_translate_finished)
-        self.translator_thread.stopped.connect(self.on_translate_stopped)  # Handle stop
+        self.translator_thread.stopped.connect(self.on_translate_stopped)
         self.translator_thread.error.connect(self.on_translation_error)
-        self.translator_thread.partial_save.connect(self.on_partial_save)  # Progressive save
+        self.translator_thread.partial_save.connect(self.on_partial_save)
+        self.translator_thread.validation_finished.connect(self.on_validation_finished)
         self.translator_thread.start()
         
         # Show immediate feedback
@@ -1296,13 +1305,35 @@ class MainWindow(QMainWindow):
 
     def on_partial_save(self, partial_results):
         """Handle progressive save during translation."""
-        # Update editor with latest translations
         if partial_results and self.current_mod_path:
-            # Silently update without triggering full refresh
             current_translations = self.editor.get_translations()
             current_translations.update(partial_results)
-            # Just update the internal data, don't refresh UI during translation
             self.loaded_mods[self.current_mod_path]["translations"] = current_translations
+
+    def on_validation_finished(self, validation_results):
+        """Handle validation results from translator thread."""
+        self.editor.update_translations({}, validation_results=validation_results)
+        
+        issue_count = sum(1 for v in validation_results.values() if v.get("issues"))
+        if issue_count > 0:
+            self.statusBar().showMessage(f"翻訳品質チェック: {issue_count} 件に警告あり（「要確認」フィルターで確認できます）", 5000)
+
+    def mark_selected_reviewed(self):
+        """Mark selected rows as reviewed."""
+        selected_rows = set()
+        for item in self.editor.table.selectedItems():
+            selected_rows.add(item.row())
+        
+        if not selected_rows:
+            return
+        
+        keys = []
+        for row in selected_rows:
+            key = self.editor.table.item(row, 0).text()
+            keys.append(key)
+        
+        self.editor.mark_reviewed(keys)
+        self.statusBar().showMessage(f"{len(keys)} 件を確認済みにしました", 3000)
 
 
     def start_auto_translate_all(self):
@@ -1451,8 +1482,9 @@ class MainWindow(QMainWindow):
         self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms, parallel_count)
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self._on_batch_translate_finished)
-        self.translator_thread.stopped.connect(self._on_batch_translate_stopped)  # Handle stop
+        self.translator_thread.stopped.connect(self._on_batch_translate_stopped)
         self.translator_thread.error.connect(self.on_translation_error)
+        self.translator_thread.validation_finished.connect(self.on_validation_finished)
         self.translator_thread.start()
         
         # Show immediate feedback
@@ -1594,9 +1626,9 @@ class MainWindow(QMainWindow):
     def on_translate_finished(self, results):
         self.editor.update_translations(results)
         
-        # Update memory immediately
         if self.current_mod_path:
              self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
+             self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
 
         self.progress_bar.hide()
         self.stop_translation_btn.hide()  # Hide stop button

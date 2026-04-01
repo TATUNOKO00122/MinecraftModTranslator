@@ -137,6 +137,7 @@ class TranslatorThread(QThread):
     stopped = Signal(dict)  # Emitted when stopped with partial results
     error = Signal(str)
     partial_save = Signal(dict)  # Signal for progressive saving
+    validation_finished = Signal(dict)  # {key: {"issues": [...], "reviewed": False}}
 
     def __init__(self, items, api_key, model, glossary=None, parallel_count=3, 
                  memory=None, mod_name=None):
@@ -192,25 +193,24 @@ class TranslatorThread(QThread):
 
     def run(self):
         results = {}
+        validation_results = {}
         
-        # Create dynamic batches based on character count
         batches = self._create_batches(self.items)
         total_items = len(self.items)
         processed = 0
         
         if self.parallel_count == 1:
-            # Sequential processing (original behavior)
             for batch_idx, batch_items in enumerate(batches):
                 if not self.is_running:
                     self.stopped.emit(results)
                     return
                 
                 try:
-                    translated_batch = self.translate_batch_with_retry(batch_items)
+                    translated_batch, batch_validation = self.translate_batch_with_retry(batch_items)
                     results.update(translated_batch)
+                    validation_results.update(batch_validation)
                     self._partial_results = results.copy()
                     
-                    # Progressive save
                     self._batches_since_save += 1
                     if self._batches_since_save >= self.save_interval:
                         self._progressive_save(results, batch_items)
@@ -220,7 +220,7 @@ class TranslatorThread(QThread):
                     self.error.emit(f"Batch {batch_idx + 1} failed: {e}")
                 
                 if not self.is_running:
-                    self._progressive_save(results, {})  # Save before stopping
+                    self._progressive_save(results, {})
                     self.stopped.emit(results)
                     return
                 
@@ -228,37 +228,34 @@ class TranslatorThread(QThread):
                 self.progress.emit(processed, total_items)
                 time.sleep(0.5)
         else:
-            # Parallel processing with ThreadPoolExecutor
-            self._run_parallel(batches, results, total_items)
+            self._run_parallel(batches, results, validation_results, total_items)
             if not self.is_running:
                 self.stopped.emit(results)
                 return
 
+        if validation_results:
+            self.validation_finished.emit(validation_results)
         self.finished.emit(results)
 
-    def _run_parallel(self, batches, results, total_items):
+    def _run_parallel(self, batches, results, validation_results, total_items):
         """Execute batches in parallel using ThreadPoolExecutor."""
         processed = 0
         current_parallel = self.parallel_count
         
-        # Process batches in chunks of parallel_count
         batch_index = 0
         while batch_index < len(batches):
             if not self.is_running:
                 return
             
-            # Get next chunk of batches to process in parallel
             chunk_end = min(batch_index + current_parallel, len(batches))
             batch_chunk = [(i, batches[i]) for i in range(batch_index, chunk_end)]
             
             with ThreadPoolExecutor(max_workers=current_parallel) as executor:
-                # Submit all batches in the chunk
                 future_to_batch = {
                     executor.submit(self._translate_batch_safe, idx, batch_items): (idx, batch_items)
                     for idx, batch_items in batch_chunk
                 }
                 
-                # Collect results as they complete
                 for future in as_completed(future_to_batch):
                     if not self.is_running:
                         executor.shutdown(wait=False, cancel_futures=True)
@@ -266,12 +263,12 @@ class TranslatorThread(QThread):
                     
                     idx, batch_items = future_to_batch[future]
                     try:
-                        translated_batch, rate_limited = future.result()
+                        translated_batch, batch_validation, rate_limited = future.result()
                         if translated_batch:
                             results.update(translated_batch)
+                            validation_results.update(batch_validation)
                             self._partial_results = results.copy()
                         
-                        # Adaptive throttling: reduce parallel count on rate limit
                         if rate_limited and current_parallel > 1:
                             current_parallel = max(1, current_parallel - 1)
                             print(f"Rate limit hit, reducing parallel count to {current_parallel}")
@@ -285,17 +282,16 @@ class TranslatorThread(QThread):
             
             batch_index = chunk_end
             
-            # Short delay between parallel chunks to avoid rate limiting
             if batch_index < len(batches):
                 time.sleep(0.3)
     
     def _translate_batch_safe(self, batch_idx, items):
         """Thread-safe wrapper for translate_batch_with_retry.
-        Returns tuple of (results, rate_limited_flag)."""
+        Returns tuple of (results, validation_results, rate_limited_flag)."""
         rate_limited = False
         try:
-            result = self.translate_batch_with_retry(items)
-            return result, rate_limited
+            result, validation = self.translate_batch_with_retry(items)
+            return result, validation, rate_limited
         except Exception as e:
             if "429" in str(e):
                 rate_limited = True
@@ -305,13 +301,13 @@ class TranslatorThread(QThread):
         retries = 0
         while retries < max_retries:
             if not self.is_running:
-                return {}
+                return {}, {}
             try:
                 return self.translate_batch(items)
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 429:
                     retries += 1
-                    wait_time = 2 ** retries # Exponential backoff
+                    wait_time = 2 ** retries
                     print(f"Rate limit hit (429). Retrying in {wait_time}s...")
                     time.sleep(wait_time)
                 else:
@@ -325,14 +321,13 @@ class TranslatorThread(QThread):
 
     def translate_batch(self, items):
         if not items:
-            return {}
+            return {}, {}
         
         if not self.is_running:
-            return {}
+            return {}, {}
         
-        # Step 1: Protect variables before sending to LLM
         protected_items = {}
-        variable_map = {}  # key -> list of variables
+        variable_map = {}
         
         for key, text in items.items():
             if text and isinstance(text, str):
@@ -424,29 +419,27 @@ class TranslatorThread(QThread):
         
         translated = json.loads(content)
         
-        # Step 2: Restore variables and validate
         final_results = {}
+        validation_results = {}
         for key, translated_text in translated.items():
             if key in variable_map and variable_map[key]:
-                # Restore original variables
                 restored_text = restore_variables(translated_text, variable_map[key])
                 
-                # Validate the result
                 is_valid, issues = validate_translation(items.get(key, ''), restored_text)
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
-                    # Still use the restored text, but log the warning
+                    validation_results[key] = {"issues": issues, "reviewed": False}
                 
                 final_results[key] = restored_text
             else:
-                # No variables to restore, validate directly
                 is_valid, issues = validate_translation(items.get(key, ''), translated_text)
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
+                    validation_results[key] = {"issues": issues, "reviewed": False}
                 
                 final_results[key] = translated_text
         
-        return final_results
+        return final_results, validation_results
 
     def _progressive_save(self, results: dict, batch_sources: dict):
         """

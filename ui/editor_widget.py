@@ -1,8 +1,78 @@
 import re
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
-                               QTableWidgetItem, QHeaderView, QLineEdit, QPushButton, QLabel, QComboBox, QSizePolicy)
-from PySide6.QtGui import QColor, QBrush, QUndoStack, QUndoCommand
-from PySide6.QtCore import Qt, Signal
+                                QTableWidgetItem, QHeaderView, QLineEdit, QPushButton, QLabel, QComboBox, QSizePolicy,
+                                QStyledItemDelegate, QStyleOptionViewItem, QStyle)
+from PySide6.QtGui import QColor, QBrush, QUndoStack, QUndoCommand, QFontMetrics, QPainter, QFont
+from PySide6.QtCore import Qt, Signal, QRect
+
+
+REVIEW_DATA_ROLE = Qt.UserRole + 1
+
+
+class TranslationDelegate(QStyledItemDelegate):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.diff_mode = False
+
+    def paint(self, painter, option, index):
+        if not self.diff_mode or index.column() != 2:
+            super().paint(painter, option, index)
+            return
+
+        painter.save()
+
+        bg = index.data(Qt.BackgroundRole)
+        if bg and isinstance(bg, QBrush):
+            painter.fillRect(option.rect, bg)
+        else:
+            painter.fillRect(option.rect, option.palette.base())
+
+        original = ""
+        table = self.parent()
+        if table:
+            orig_item = table.item(index.row(), 1)
+            if orig_item:
+                original = orig_item.text()
+
+        translated = index.data(Qt.DisplayRole) or ""
+        if isinstance(translated, str):
+            translated = translated
+        else:
+            translated = str(translated)
+
+        half_h = option.rect.height() // 2
+        font = option.font
+        painter.setFont(font)
+
+        fm = QFontMetrics(font)
+        margin = 4
+
+        original_rect = QRect(option.rect.x() + margin, option.rect.y() + 2,
+                              option.rect.width() - margin * 2, half_h - 2)
+        translated_rect = QRect(option.rect.x() + margin, option.rect.y() + half_h,
+                                option.rect.width() - margin * 2, half_h - 2)
+
+        painter.setPen(QColor("#8899aa"))
+        elided_orig = fm.elidedText(original, Qt.ElideRight, original_rect.width())
+        painter.drawText(original_rect, Qt.AlignLeft | Qt.AlignVCenter, elided_orig)
+
+        fg = index.data(Qt.ForegroundRole)
+        if fg and isinstance(fg, QBrush):
+            painter.setPen(fg.color())
+        else:
+            painter.setPen(option.palette.text().color())
+        elided_trans = fm.elidedText(translated, Qt.ElideRight, translated_rect.width())
+        painter.drawText(translated_rect, Qt.AlignLeft | Qt.AlignVCenter, elided_trans)
+
+        pen = QBrush(QColor("#444c56"))
+        painter.setPen(pen.color())
+        painter.drawLine(option.rect.x(), option.rect.y() + half_h,
+                         option.rect.right(), option.rect.y() + half_h)
+
+        painter.restore()
+
+    def set_diff_mode(self, enabled):
+        self.diff_mode = enabled
 
 
 class TranslationEditCommand(QUndoCommand):
@@ -54,6 +124,7 @@ class EditorWidget(QWidget):
         self.undo_stack = QUndoStack(self)
         self._programmatic_update = False
         self._previous_cell_texts = {}
+        self.review_status = {}
         
         # Toolbar
         toolbar = QHBoxLayout()
@@ -76,8 +147,15 @@ class EditorWidget(QWidget):
         self.filter_combo.addItem("未翻訳のみ", 1)
         self.filter_combo.addItem("原文と同じ", 2)
         self.filter_combo.addItem("ローマ字あり", 3)
+        self.filter_combo.addItem("要確認", 4)
         self.filter_combo.currentIndexChanged.connect(self.filter_table)
         toolbar.addWidget(self.filter_combo)
+        
+        self.diff_toggle_btn = QPushButton("差分表示")
+        self.diff_toggle_btn.setCheckable(True)
+        self.diff_toggle_btn.setToolTip("翻訳列に原文と翻訳を上下に表示します")
+        self.diff_toggle_btn.toggled.connect(self._toggle_diff_mode)
+        toolbar.addWidget(self.diff_toggle_btn)
         
         self.extract_terms_btn = QPushButton("辞書作成")
         self.extract_terms_btn.setToolTip("翻訳から辞書をAI作成します")
@@ -110,6 +188,9 @@ class EditorWidget(QWidget):
         
         self.table.cellChanged.connect(self._on_cell_changed)
         
+        self.translation_delegate = TranslationDelegate(self.table)
+        self.table.setItemDelegateForColumn(2, self.translation_delegate)
+        
         layout.addWidget(self.table)
         
         # Data
@@ -119,6 +200,7 @@ class EditorWidget(QWidget):
     def load_data(self, data):
         self.original_data = data
         self.translations = {}
+        self.review_status = {}
         self.undo_stack.clear()
         self._previous_cell_texts.clear()
         self.populate_table()
@@ -173,6 +255,7 @@ class EditorWidget(QWidget):
             
             trans_text = self.translations.get(key, "")
             trans_item = QTableWidgetItem(trans_text)
+            trans_item.setToolTip(f"原文: {value}")
             self.table.setItem(i, 2, trans_item)
             
             self._previous_cell_texts[(i, 2)] = trans_text
@@ -182,19 +265,22 @@ class EditorWidget(QWidget):
         self._programmatic_update = False
 
     def _update_row_color(self, row, translation, original):
-        # If translated and different from original: green (fully translated)
-        # If translated but same as original: yellow (needs attention)
-        # Otherwise: default
+        key = self.table.item(row, 0).text()
+        review = self.review_status.get(key, {})
+        has_issues = bool(review.get("issues"))
+        is_reviewed = review.get("reviewed", False)
+        
         if translation and translation != original:
-            # Translated properly - green
-            color = QColor("#2f6b36")
-            text_color = QColor("#ffffff")
+            if has_issues and not is_reviewed:
+                color = QColor("#8b5a00")
+                text_color = QColor("#ffcc66")
+            else:
+                color = QColor("#2f6b36")
+                text_color = QColor("#ffffff")
         elif translation and translation == original:
-            # Same as original - yellow (needs attention)
             color = QColor("#6b5a2f")
             text_color = QColor("#ffffff")
         else:
-            # Not translated - reset to default
             for col in range(3):
                 item = self.table.item(row, col)
                 if item:
@@ -225,7 +311,6 @@ class EditorWidget(QWidget):
                             filter_text in original.lower() or 
                             filter_text in translation.lower())
             
-            # Filter logic based on state
             match_filter = True
             if filter_state == 1:  # Missing (untranslated)
                 match_filter = not translation
@@ -238,6 +323,9 @@ class EditorWidget(QWidget):
                 text_without_codes = re.sub(r'%(\d+\$)?[sdfc]', '', text_without_codes)
                 # Check if any Roman letters remain
                 match_filter = bool(re.search(r'[A-Za-z]', text_without_codes))
+            elif filter_state == 4:  # Needs review (has issues, not reviewed)
+                review = self.review_status.get(key, {})
+                match_filter = bool(review.get("issues")) and not review.get("reviewed", False)
             
             self.table.setRowHidden(i, not (match_search and match_filter))
         
@@ -253,18 +341,23 @@ class EditorWidget(QWidget):
                 result[key] = translation
         return result
 
-    def update_translations(self, additional_translations):
+    def update_translations(self, additional_translations, validation_results=None):
         self._programmatic_update = True
         self.translations.update(additional_translations)
         self.table.setUpdatesEnabled(False)
+        
+        if validation_results:
+            self.review_status.update(validation_results)
         
         for i in range(self.table.rowCount()):
             key = self.table.item(i, 0).text()
             if key in additional_translations:
                 text = additional_translations[key]
-                self.table.item(i, 2).setText(text)
-                self._previous_cell_texts[(i, 2)] = text
+                item = self.table.item(i, 2)
+                item.setText(text)
                 original = self.table.item(i, 1).text()
+                item.setToolTip(f"原文: {original}")
+                self._previous_cell_texts[(i, 2)] = text
                 self._update_row_color(i, text, original)
         
         self.table.setUpdatesEnabled(True)
@@ -321,3 +414,25 @@ class EditorWidget(QWidget):
         """全MOD検索ボタンがクリックされたときにシグナルを発行"""
         search_text = self.search_input.text()
         self.searchAllModsRequested.emit(search_text)
+
+    def _toggle_diff_mode(self, checked):
+        self.translation_delegate.set_diff_mode(checked)
+        v_header = self.table.verticalHeader()
+        if checked:
+            v_header.setDefaultSectionSize(max(v_header.defaultSectionSize(), 48))
+        else:
+            v_header.setDefaultSectionSize(max(v_header.minimumSectionSize(), 28))
+        self.table.viewport().update()
+
+    def mark_reviewed(self, keys):
+        self.table.setUpdatesEnabled(False)
+        for key in keys:
+            if key in self.review_status:
+                self.review_status[key]["reviewed"] = True
+            for i in range(self.table.rowCount()):
+                if self.table.item(i, 0).text() == key:
+                    original = self.table.item(i, 1).text()
+                    translation = self.table.item(i, 2).text()
+                    self._update_row_color(i, translation, original)
+                    break
+        self.table.setUpdatesEnabled(True)
