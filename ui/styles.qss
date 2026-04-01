@@ -70,6 +70,44 @@ QPushButton#PrimaryButton:pressed {
     background-color: #005a9e;
 }
 
+/* Radio Buttons & Checkboxes */
+QRadioButton {
+    color: #d4d4d4;
+    spacing: 8px;
+}
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border: 2px solid #666666;
+    border-radius: 8px;
+    background-color: #1e1e1e;
+}
+QRadioButton::indicator:checked {
+    border-color: #007acc;
+    background-color: #007acc;
+}
+QRadioButton::indicator:hover {
+    border-color: #888888;
+}
+QCheckBox {
+    color: #d4d4d4;
+    spacing: 8px;
+}
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border: 2px solid #666666;
+    border-radius: 3px;
+    background-color: #1e1e1e;
+}
+QCheckBox::indicator:checked {
+    border-color: #007acc;
+    background-color: #007acc;
+}
+QCheckBox::indicator:hover {
+    border-color: #888888;
+}
+
 /* Toolbar - Match Button Style */
 QToolBar {
     background-color: #2d2d2d;

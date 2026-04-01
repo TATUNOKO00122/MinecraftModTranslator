@@ -286,6 +286,36 @@ _COMMON_WORDS = frozenset({
     'the', 'is', 'are', 'was', 'were', 'a', 'an', 'and', 'or',
     'of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from',
     'it', 'this', 'that', 'has', 'have', 'had', 'not', 'but',
+    'can', 'will', 'your', 'you', 'be', 'do', 'if', 'so', 'no',
+    'all', 'any', 'its', 'my', 'me', 'we', 'he', 'she', 'they',
+    'them', 'his', 'her', 'our', 'us', 'been', 'being', 'did',
+    'get', 'got', 'may', 'must', 'shall', 'should', 'would',
+    'could', 'than', 'then', 'there', 'here', 'where', 'when',
+    'how', 'what', 'which', 'who', 'whom', 'each', 'every',
+    'own', 'other', 'more', 'some', 'such', 'only', 'same',
+    'also', 'just', 'very', 'even', 'still', 'already', 'too',
+    'into', 'over', 'after', 'before', 'between', 'under',
+    'about', 'up', 'out', 'down', 'off', 'above', 'below',
+    'through', 'during', 'without', 'within', 'along', 'upon',
+    'while', 'because', 'until', 'since', 'although', 'though',
+})
+
+_SKIP_TERMS_LOWER = frozenset({
+    'minecraft', 'mojang', 'forge', 'fabric', 'quilt', 'neoforge',
+    'java', 'bedrock', 'resource', 'pack', 'mod', 'mods', 'config',
+    'version', 'update', 'changelog', 'license', 'copyright',
+    'github', 'curseforge', 'modrinth', 'discord', 'patreon',
+    'paypal', 'bitcoin', 'ethereum', 'http', 'https', 'www',
+    'false', 'true', 'null', 'none', 'key', 'value', 'type',
+    'name', 'id', 'tag', 'path', 'file', 'folder', 'directory',
+    'string', 'integer', 'float', 'double', 'boolean', 'list',
+    'description', 'comment', 'tooltip', 'lore', 'text', 'message',
+    'desc', 'title', 'info', 'tip', 'note', 'warn', 'error',
+    'block', 'item', 'entity', 'fluid', 'enchantment', 'potion',
+    'effect', 'biome', 'dimension', 'structure', 'feature',
+    'advancement', 'recipe', 'loot', 'damage', 'heal', 'attack',
+    'defense', 'speed', 'health', 'mana', 'energy', 'level',
+    'tier', 'rarity', 'category', 'group', 'slot', 'container',
 })
 
 
@@ -352,6 +382,148 @@ def extract_all_term_candidates(original_items, translated_items, existing_gloss
             }
 
     return consistent, inconsistent
+
+
+_COLOR_CODE_RE = re.compile(r'[&§]([0-9a-fklmno])([^&§]*?)[&§]r')
+_TITLE_CASE_RE = re.compile(
+    r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+(?:\s+[A-Z][a-z]+)*)\b'
+)
+_SINGLE_CAP_WORD_RE = re.compile(r'\b([A-Z][a-z]{2,})\b')
+_BRACKET_TERM_RE = re.compile(r'[\[<]([A-Z][A-Za-z\s]{2,})[\]>]')
+_QUOTED_TERM_RE = re.compile(r'["\u201c]([A-Z][A-Za-z\s]{2,}?)["\u201d]')
+
+
+def extract_frequent_terms_from_original(original_items, min_count=2,
+                                         existing_glossary=None):
+    """
+    翻訳前の原文のみから頻出する固有名詞候補を抽出する（API不要・ローカル処理）。
+
+    抽出戦略:
+      1. カラーコード付きテキスト（&eEverbright&r 等）— MOD固有名詞の信頼度が高い
+      2. Title Case 複合語（Blue Journal, Night Lich 等）
+      3. ブラケット/引用符内の語
+      4. 大文字始まりの単語（出現数が多いもの）
+      5. lang key の末尾セグメント（item.minecraft.diamond_sword → Diamond Sword）
+
+    Args:
+        original_items: dict[str, str] — {key: original_text}
+        min_count: int — 最低出現回数
+        existing_glossary: dict[str, str] — 既存辞書（既登録語は除外）
+
+    Returns:
+        list[tuple[str, int, list[str]]] — [(term, count, sample_keys), ...]
+            出現回数降順でソート済み
+    """
+    if existing_glossary is None:
+        existing_glossary = {}
+
+    term_sources = defaultdict(lambda: {"count": 0, "keys": [], "priority": 0})
+
+    for key, text in original_items.items():
+        text = str(text)
+        if not text:
+            continue
+
+        found_in_entry = set()
+
+        for color, content in _COLOR_CODE_RE.findall(text):
+            content = content.strip()
+            if _is_valid_frequent_term(content, existing_glossary):
+                found_in_entry.add(content)
+                if term_sources[content]["priority"] < 5:
+                    term_sources[content]["priority"] = 5
+
+        for match in _BRACKET_TERM_RE.finditer(text):
+            term = match.group(1).strip()
+            if _is_valid_frequent_term(term, existing_glossary):
+                found_in_entry.add(term)
+                if term_sources[term]["priority"] < 4:
+                    term_sources[term]["priority"] = 4
+
+        for match in _QUOTED_TERM_RE.finditer(text):
+            term = match.group(1).strip()
+            if _is_valid_frequent_term(term, existing_glossary):
+                found_in_entry.add(term)
+                if term_sources[term]["priority"] < 4:
+                    term_sources[term]["priority"] = 4
+
+        for match in _TITLE_CASE_RE.finditer(text):
+            term = match.group(1).strip()
+            if _is_valid_frequent_term(term, existing_glossary):
+                found_in_entry.add(term)
+                if term_sources[term]["priority"] < 3:
+                    term_sources[term]["priority"] = 3
+
+        key_last = _extract_term_from_key(key)
+        if key_last and _is_valid_frequent_term(key_last, existing_glossary):
+            found_in_entry.add(key_last)
+            if term_sources[key_last]["priority"] < 2:
+                term_sources[key_last]["priority"] = 2
+
+        if len(found_in_entry) == 0:
+            for match in _SINGLE_CAP_WORD_RE.finditer(text):
+                term = match.group(1)
+                if _is_valid_frequent_term(term, existing_glossary):
+                    found_in_entry.add(term)
+                    if term_sources[term]["priority"] < 1:
+                        term_sources[term]["priority"] = 1
+
+        for term in found_in_entry:
+            src = term_sources[term]
+            src["count"] += 1
+            if len(src["keys"]) < 5:
+                src["keys"].append(key)
+
+    results = []
+    for term, src in term_sources.items():
+        if src["count"] >= min_count:
+            results.append((term, src["count"], src["keys"]))
+
+    results.sort(key=lambda x: (x[1] * 10 + term_sources[x[0]]["priority"], x[0]),
+                 reverse=True)
+
+    return results
+
+
+def _is_valid_frequent_term(text, existing_glossary):
+    stripped = text.strip()
+    if len(stripped) < 3 or len(stripped) > 60:
+        return False
+    if not re.search(r'[a-zA-Z]', stripped):
+        return False
+    lower = stripped.lower()
+    if lower in existing_glossary or stripped in existing_glossary:
+        return False
+    if lower in _SKIP_TERMS_LOWER:
+        return False
+    words = set(lower.split())
+    if words <= _COMMON_WORDS:
+        return False
+    if re.match(r'^[A-Z][a-z]+$', stripped) and lower in _COMMON_WORDS:
+        return False
+    return True
+
+
+def _extract_term_from_key(key):
+    """
+    lang key の末尾セグメントから人が読める形式の名前を抽出する。
+    例: "item.mineandslash.blue_journal" → "Blue Journal"
+    """
+    segments = key.split('.')
+    last = segments[-1] if segments else ''
+    if not last or len(last) < 3:
+        return None
+    if last.startswith('_'):
+        last = last[1:]
+    has_letter = any(c.isalpha() for c in last)
+    if not has_letter:
+        return None
+    readable = last.replace('_', ' ').strip()
+    readable = ' '.join(w.capitalize() for w in readable.split())
+    words = set(readable.lower().split())
+    if words <= _COMMON_WORDS or words <= _SKIP_TERMS_LOWER:
+        return None
+    return readable if len(readable) >= 3 else None
 
 
 def extract_consistent_terms(original_items, translated_items, existing_glossary=None):

@@ -57,6 +57,29 @@ class SettingsDialog(QDialog):
         
         layout.addSpacing(10)
 
+        # Frequent Term Translation Model
+        freq_model_group = QGroupBox("頻出語抽出 - 翻訳モデル")
+        freq_model_layout = QFormLayout()
+
+        self.freq_model_combo = QComboBox()
+        self._freq_fallback_models = [
+            ('google/gemini-2.5-flash-lite', 'Gemini 2.5 Flash-Lite'),
+            ('google/gemini-2.0-flash-exp:free', 'Gemini 2.0 Flash (Free)'),
+            ('deepseek/deepseek-chat', 'DeepSeek Chat'),
+            ('openai/gpt-4o-mini', 'GPT-4o mini'),
+        ]
+        self._populate_freq_models(self._freq_fallback_models)
+        freq_model_layout.addRow("モデル:", self.freq_model_combo)
+
+        freq_hint = QLabel("頻出語の仮翻訳に使用するモデル（安価・高速モデルを推奨）")
+        freq_hint.setStyleSheet("color: #888; font-size: 11px;")
+        freq_model_layout.addRow("", freq_hint)
+
+        freq_model_group.setLayout(freq_model_layout)
+        layout.addWidget(freq_model_group)
+        
+        layout.addSpacing(10)
+
         # Minecraft Version / pack_format
         mc_group = QGroupBox("Minecraft バージョン")
         mc_layout = QFormLayout()
@@ -160,6 +183,18 @@ class SettingsDialog(QDialog):
                 self.model_combo.setCurrentIndex(idx)
         self.model_combo.blockSignals(False)
 
+    def _populate_freq_models(self, models):
+        current_data = self.freq_model_combo.currentData()
+        self.freq_model_combo.blockSignals(True)
+        self.freq_model_combo.clear()
+        for model_id, model_name in models:
+            self.freq_model_combo.addItem(model_name, model_id)
+        if current_data:
+            idx = self.freq_model_combo.findData(current_data)
+            if idx >= 0:
+                self.freq_model_combo.setCurrentIndex(idx)
+        self.freq_model_combo.blockSignals(False)
+
     def _load_cached_models(self):
         cached_json = self.settings.value("cached_models", "")
         cached_ts = self.settings.value("cached_models_ts", 0)
@@ -174,6 +209,12 @@ class SettingsDialog(QDialog):
                     idx = self.model_combo.findData(current_model)
                     if idx >= 0:
                         self.model_combo.setCurrentIndex(idx)
+
+                    freq_model = self.settings.value("freq_model", "")
+                    if freq_model:
+                        idx = self.freq_model_combo.findData(freq_model)
+                        if idx >= 0:
+                            self.freq_model_combo.setCurrentIndex(idx)
                     return
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -226,10 +267,18 @@ class SettingsDialog(QDialog):
             
             self._populate_models(models)
             self._restore_model_selection()
+
+            self._populate_freq_models(models)
+            freq_model = self.settings.value("freq_model", "google/gemini-2.5-flash-lite")
+            idx = self.freq_model_combo.findData(freq_model)
+            if idx >= 0:
+                self.freq_model_combo.setCurrentIndex(idx)
             
         except Exception:
             self._populate_models(self._fallback_models)
             self._restore_model_selection()
+            self._populate_freq_models(self._freq_fallback_models)
+            self._restore_freq_model_selection()
         finally:
             self.refresh_models_btn.setEnabled(True)
             self.refresh_models_btn.setText("更新")
@@ -240,6 +289,12 @@ class SettingsDialog(QDialog):
         if idx >= 0:
             self.model_combo.setCurrentIndex(idx)
 
+    def _restore_freq_model_selection(self):
+        freq_model = self.settings.value("freq_model", "google/gemini-2.5-flash-lite")
+        idx = self.freq_model_combo.findData(freq_model)
+        if idx >= 0:
+            self.freq_model_combo.setCurrentIndex(idx)
+
     def choose_export_dir(self):
         dir_path = QFileDialog.getExistingDirectory(self, "出力先フォルダを選択")
         if dir_path:
@@ -248,6 +303,7 @@ class SettingsDialog(QDialog):
     def save_settings(self):
         self.settings.setValue("api_key", self.api_key_input.text())
         self.settings.setValue("model", self.model_combo.currentData())
+        self.settings.setValue("freq_model", self.freq_model_combo.currentData())
         self.settings.setValue("export_dir", self.export_dir_input.text())
         self.settings.setValue("parallel_count", self.parallel_spin.value())
         self.settings.setValue("pack_format", self.mc_version_combo.currentData())
@@ -258,6 +314,7 @@ class SettingsDialog(QDialog):
         return {
             "api_key": self.api_key_input.text(),
             "model": self.model_combo.currentData(),
+            "freq_model": self.freq_model_combo.currentData(),
             "export_dir": self.export_dir_input.text(),
             "parallel_count": self.parallel_spin.value(),
             "pack_format": self.mc_version_combo.currentData(),

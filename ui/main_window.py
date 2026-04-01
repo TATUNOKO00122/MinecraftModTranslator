@@ -1,7 +1,8 @@
 import os
 import json
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolBar, 
-                               QFileDialog, QMessageBox, QLabel, QProgressBar, QMenu, QSplitter, QListWidget, QApplication)
+                               QFileDialog, QMessageBox, QLabel, QProgressBar, QMenu, QSplitter, QListWidget, QApplication,
+                               QDialog, QDialogButtonBox)
 from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
 from PySide6.QtCore import Qt
 
@@ -14,8 +15,8 @@ from logic import datapack_handler
 from ui.editor_widget import EditorWidget
 from ui.settings_dialog import SettingsDialog
 from ui.glossary_dialog import GlossaryDialog
-from ui.term_extraction_dialog import TermExtractionDialog
-from logic.term_extractor import AITermExtractorThread, extract_all_term_candidates
+from ui.term_extraction_dialog import TermExtractionDialog, FrequentTermDialog, FrequentTermTranslateThread
+from logic.term_extractor import AITermExtractorThread, extract_all_term_candidates, extract_frequent_terms_from_original
 from logic.resource_pack_handler import ResourcePackImportThread
 
 class NoScrollListWidget(QListWidget):
@@ -98,6 +99,11 @@ class MainWindow(QMainWindow):
         dictionary_action = QAction("辞書", self)
         dictionary_action.triggered.connect(self.open_glossary)
         self.toolbar.addAction(dictionary_action)
+
+        self.freq_terms_action = QAction("頻出語抽出", self)
+        self.freq_terms_action.setToolTip("翻訳前に原文から頻出する固有名詞を抽出し、辞書に登録します")
+        self.freq_terms_action.triggered.connect(self.show_frequent_terms)
+        self.toolbar.addAction(self.freq_terms_action)
         
         export_action = QAction("リソースパック作成", self)
         export_action.triggered.connect(self.export_resource_pack)
@@ -1713,6 +1719,125 @@ class MainWindow(QMainWindow):
         self.translator_thread = None
         self.translation_original_items = None
         self.statusBar().showMessage("一括翻訳が中断されました", 3000)
+
+
+    def show_frequent_terms(self):
+        """翻訳前に原文から頻出する固有名詞を抽出し、辞書登録ダイアログを表示する。"""
+        if not self.loaded_mods:
+            QMessageBox.information(self, "情報", "MODが読み込まれていません。")
+            return
+
+        settings = self.settings_dialog.get_settings()
+        api_key = settings.get("api_key")
+        freq_model = settings.get("freq_model")
+        if not freq_model:
+            freq_model = "deepseek/deepseek-chat"
+
+        from PySide6.QtWidgets import QDialogButtonBox, QComboBox
+        from PySide6.QtWidgets import QCheckBox as Toggle
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("頻出語抽出")
+        dlg.setModal(True)
+        dlg_layout = QVBoxLayout(dlg)
+
+        dlg_layout.addWidget(QLabel("対象を選択:"))
+
+        self._ft_target_combo = QComboBox()
+        has_current = self.current_mod_path is not None
+        if has_current:
+            self._ft_target_combo.addItem("現在のMOD", "current")
+        self._ft_target_combo.addItem("全MOD", "all")
+        dlg_layout.addWidget(self._ft_target_combo)
+
+        dlg_layout.addSpacing(8)
+
+        self._ft_translate_toggle = Toggle("AIで仮翻訳も同時に実行")
+        self._ft_translate_toggle.setChecked(True)
+        if not api_key or not freq_model:
+            self._ft_translate_toggle.setChecked(False)
+            self._ft_translate_toggle.setEnabled(False)
+            self._ft_translate_toggle.setToolTip("API設定が必要です")
+        dlg_layout.addWidget(self._ft_translate_toggle)
+
+        dlg_layout.addSpacing(12)
+
+        btn_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btn_box.button(QDialogButtonBox.Ok).setText("実行")
+        btn_box.accepted.connect(dlg.accept)
+        btn_box.rejected.connect(dlg.reject)
+        dlg_layout.addWidget(btn_box)
+
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        is_current = self._ft_target_combo.currentData() == "current"
+        do_translate = self._ft_translate_toggle.isChecked()
+
+        if is_current:
+            mod_data = self.loaded_mods[self.current_mod_path]
+            all_original = dict(mod_data.get("original", {}))
+        else:
+            all_original = {}
+            for path, mod_data in self.loaded_mods.items():
+                all_original.update(mod_data.get("original", {}))
+
+        if not all_original:
+            QMessageBox.information(self, "情報", "原文テキストが見つかりません。")
+            return
+
+        frequent = extract_frequent_terms_from_original(
+            all_original, min_count=2, existing_glossary=self.glossary.get_terms()
+        )
+
+        if not frequent:
+            QMessageBox.information(self, "情報", "頻出する固有名詞候補が見つかりませんでした。")
+            return
+
+        initial_translations = {}
+        if do_translate:
+            terms = [term for term, _, _ in frequent]
+            thread = FrequentTermTranslateThread(terms, api_key, freq_model)
+
+            progress_dlg = QMessageBox(self)
+            progress_dlg.setWindowTitle("AI仮翻訳")
+            progress_dlg.setText("AIで仮翻訳を生成中...")
+            progress_dlg.setStandardButtons(QMessageBox.Cancel)
+
+            _result_holder = {}
+
+            def on_progress(msg):
+                progress_dlg.setText(msg)
+
+            def on_finished(translations):
+                _result_holder["data"] = translations
+                progress_dlg.done(QMessageBox.Ok)
+
+            def on_error(err):
+                progress_dlg.done(QMessageBox.Ok)
+
+            thread.finished.connect(on_finished)
+            thread.error.connect(on_error)
+            thread.progress.connect(on_progress)
+            thread.start()
+
+            result = progress_dlg.exec()
+            if result == QMessageBox.Cancel:
+                thread.stop()
+            thread.wait(3000)
+            initial_translations = _result_holder.get("data", {})
+
+        dialog = FrequentTermDialog(
+            frequent, self.glossary, self,
+            api_key=api_key, freq_model=freq_model,
+            initial_translations=initial_translations,
+        )
+        if dialog.exec():
+            added = dialog.get_added_count()
+            if added > 0:
+                self.statusBar().showMessage(
+                    f"{added} 件の用語を辞書に追加しました", 5000
+                )
 
 
     def start_manual_term_extraction(self):

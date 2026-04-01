@@ -1,8 +1,11 @@
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTableWidget,
                                 QTableWidgetItem, QPushButton, QHeaderView, QLabel,
-                                QCheckBox, QWidget, QLineEdit)
-from PySide6.QtCore import Qt
+                                QCheckBox, QWidget, QLineEdit, QRadioButton,
+                                QButtonGroup, QProgressBar, QMessageBox)
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QColor
+import json
+import requests
 
 
 _INCONSISTENT_BG = QColor(255, 255, 210)
@@ -116,11 +119,6 @@ class TermExtractionDialog(QDialog):
         deselect_all_btn.clicked.connect(self._deselect_all)
         select_layout.addWidget(deselect_all_btn)
 
-        if inconsistent_count > 0:
-            inconsistent_only_btn = QPushButton("不一致のみ選択")
-            inconsistent_only_btn.clicked.connect(self._select_inconsistent_only)
-            select_layout.addWidget(inconsistent_only_btn)
-
         select_layout.addStretch()
         layout.addLayout(select_layout)
 
@@ -201,6 +199,387 @@ class TermExtractionDialog(QDialog):
             self.selected_terms = selected
 
         self.accept()
+
+    def get_added_count(self):
+        return len(self.selected_terms)
+
+
+class FrequentTermTranslateThread(QThread):
+    """頻出語の仮翻訳をAIで行うスレッド。"""
+
+    finished = Signal(dict)
+    error = Signal(str)
+    progress = Signal(str)
+
+    def __init__(self, terms, api_key, model):
+        super().__init__()
+        self.terms = terms
+        self.api_key = api_key
+        self.model = model
+        self.is_running = True
+
+    def run(self):
+        try:
+            self.progress.emit("AIで仮翻訳を生成中...")
+
+            terms_list = list(self.terms)
+            batch_size = 50
+            all_translations = {}
+
+            for i in range(0, len(terms_list), batch_size):
+                if not self.is_running:
+                    break
+
+                batch = terms_list[i:i + batch_size]
+                self.progress.emit(
+                    f"AIで仮翻訳を生成中... ({i + len(batch)}/{len(terms_list)})"
+                )
+
+                translations = self._translate_batch(batch)
+                all_translations.update(translations)
+
+            self.finished.emit(all_translations)
+
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def _translate_batch(self, terms):
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "X-Title": "Minecraft MOD Translator - Frequent Term Translation"
+        }
+
+        terms_json = json.dumps(terms, ensure_ascii=False)
+
+        system_prompt = (
+            "あなたはMinecraft MODの専門翻訳者です。\n"
+            "与えられた英語の固有名詞リストを日本語に翻訳してください。\n"
+            "Minecraftの用語 convention に従ってください。\n"
+            "出力はJSONオブジェクトのみ（キー: 英語、値: 日本語）。\n"
+            "マークダウンのコードブロックは使用しないでください。"
+        )
+
+        user_prompt = (
+            f"以下の固有名詞を日本語に翻訳してください:\n{terms_json}\n\n"
+            "JSONオブジェクトのみを出力してください。"
+        )
+
+        data = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": 0.3
+        }
+
+        response = requests.post(url, headers=headers, json=data, timeout=60)
+        if response.status_code != 200:
+            print(f"FrequentTermTranslate API error {response.status_code}: {response.text[:500]}")
+            response.raise_for_status()
+
+        content = response.json()['choices'][0]['message']['content'].strip()
+
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            import re
+            match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+            return {}
+
+    def stop(self):
+        self.is_running = False
+
+
+class FrequentTermDialog(QDialog):
+    """翻訳前に原文から抽出した頻出語を確認し、辞書に登録するダイアログ。"""
+
+    def __init__(self, frequent_terms, glossary, parent=None, api_key=None, freq_model=None,
+                 initial_translations=None):
+        """
+        Args:
+            frequent_terms: list[tuple[str, int, list[str]]]
+            glossary: Glossary
+            parent: QWidget
+            api_key: str
+            freq_model: str
+            initial_translations: dict[str, str] — 事前AI翻訳結果（トグルON時）
+        """
+        super().__init__(parent)
+        self.glossary = glossary
+        self.selected_terms = {}
+        self._frequent_terms = frequent_terms
+        self._api_key = api_key
+        self._freq_model = freq_model
+        self._translate_thread = None
+        self._initial_translations = initial_translations or {}
+
+        self.setWindowTitle("頻出固有名詞の抽出結果（翻訳前）")
+        self.resize(850, 600)
+        self.setModal(True)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        total = len(self._frequent_terms)
+        header_label = QLabel(
+            f"原文から {total} 件の頻出固有名詞候補が見つかりました。\n"
+            "辞書に登録する項目にチェックを入れ、訳文（日本語）を入力してください。\n"
+            "登録された用語は翻訳時の一貫性確保に使用されます。"
+        )
+        header_label.setStyleSheet("font-size: 12px; margin-bottom: 5px;")
+        layout.addWidget(header_label)
+
+        search_layout = QHBoxLayout()
+        search_label = QLabel("検索:")
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("原文で絞り込み...")
+        self.search_input.textChanged.connect(self._filter_table)
+        search_layout.addWidget(search_label)
+        search_layout.addWidget(self.search_input)
+        layout.addLayout(search_layout)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(
+            ["追加", "原文 (英語)", "訳文 (日本語)", "出現数"]
+        )
+
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.setColumnWidth(0, 50)
+        self.table.verticalHeader().setDefaultSectionSize(35)
+
+        self.table.setRowCount(len(self._frequent_terms))
+
+        for row, (term, count, sample_keys) in enumerate(self._frequent_terms):
+            checkbox = QCheckBox()
+            checkbox.setChecked(True)
+            checkbox_widget = QWidget()
+            cb_layout = QHBoxLayout(checkbox_widget)
+            cb_layout.addWidget(checkbox)
+            cb_layout.setAlignment(Qt.AlignCenter)
+            cb_layout.setContentsMargins(0, 0, 0, 0)
+            self.table.setCellWidget(row, 0, checkbox_widget)
+
+            orig_item = QTableWidgetItem(term)
+            self.table.setItem(row, 1, orig_item)
+
+            initial_trans = self._initial_translations.get(term, "")
+            trans_item = QTableWidgetItem(initial_trans)
+            trans_item.setBackground(QColor(60, 60, 60))
+            self.table.setItem(row, 2, trans_item)
+
+            count_item = QTableWidgetItem(f"{count} 回")
+            count_item.setFlags(count_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 3, count_item)
+
+            tooltip_lines = [f"出現数: {count} 回"]
+            if sample_keys:
+                tooltip_lines.append("使用箇所:")
+                for k in sample_keys[:5]:
+                    tooltip_lines.append(f"  - {k}")
+            tooltip = "\n".join(tooltip_lines)
+            for col in range(4):
+                item = self.table.item(row, col)
+                if item:
+                    item.setToolTip(tooltip)
+
+        layout.addWidget(self.table)
+
+        select_layout = QHBoxLayout()
+        select_all_btn = QPushButton("すべて選択")
+        select_all_btn.clicked.connect(self._select_all)
+        select_layout.addWidget(select_all_btn)
+
+        deselect_all_btn = QPushButton("すべて解除")
+        deselect_all_btn.clicked.connect(self._deselect_all)
+        select_layout.addWidget(deselect_all_btn)
+
+        select_layout.addStretch()
+
+        self.ai_translate_btn = QPushButton("AIで仮翻訳")
+        self.ai_translate_btn.setToolTip("AIで選択項目の仮訳文を生成します")
+        self.ai_translate_btn.clicked.connect(self._start_ai_translate)
+        if not self._api_key or not self._freq_model:
+            self.ai_translate_btn.setEnabled(False)
+            self.ai_translate_btn.setToolTip("API設定が必要です")
+        select_layout.addWidget(self.ai_translate_btn)
+
+        layout.addLayout(select_layout)
+
+        btn_layout = QHBoxLayout()
+
+        add_btn = QPushButton("選択した項目を辞書に追加")
+        add_btn.clicked.connect(self._add_selected)
+        add_btn.setStyleSheet(
+            "background-color: #4CAF50; color: white; font-weight: bold; padding: 8px 16px;"
+        )
+        btn_layout.addWidget(add_btn)
+
+        skip_btn = QPushButton("スキップ")
+        skip_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(skip_btn)
+
+        layout.addLayout(btn_layout)
+
+    def _filter_table(self, text):
+        query = text.lower().strip()
+        for row in range(self.table.rowCount()):
+            if not query:
+                self.table.setRowHidden(row, False)
+                continue
+            orig_item = self.table.item(row, 1)
+            orig = orig_item.text().lower() if orig_item else ""
+            self.table.setRowHidden(row, query not in orig)
+
+    def _set_visible_checkboxes(self, checked):
+        for row in range(self.table.rowCount()):
+            if self.table.isRowHidden(row):
+                continue
+            widget = self.table.cellWidget(row, 0)
+            if widget:
+                checkbox = widget.findChild(QCheckBox)
+                if checkbox:
+                    checkbox.setChecked(checked)
+
+    def _cleanup_thread(self):
+        if self._translate_thread is not None:
+            self._translate_thread.stop()
+            self._translate_thread.wait(3000)
+            self._translate_thread = None
+
+    def _start_ai_translate(self):
+        terms_to_translate = []
+        for row in range(self.table.rowCount()):
+            widget = self.table.cellWidget(row, 0)
+            if not widget:
+                continue
+            checkbox = widget.findChild(QCheckBox)
+            if not checkbox or not checkbox.isChecked():
+                continue
+            trans_item = self.table.item(row, 2)
+            if trans_item and not trans_item.text().strip():
+                orig_item = self.table.item(row, 1)
+                if orig_item:
+                    terms_to_translate.append(orig_item.text().strip())
+
+        if not terms_to_translate:
+            QMessageBox.information(self, "情報", "訳文が空のチェック済み項目がありません。")
+            return
+
+        self.ai_translate_btn.setEnabled(False)
+        self.ai_translate_btn.setText("翻訳中...")
+
+        self._translate_thread = FrequentTermTranslateThread(
+            terms_to_translate, self._api_key, self._freq_model
+        )
+        self._translate_thread.finished.connect(self._on_translate_finished)
+        self._translate_thread.error.connect(self._on_translate_error)
+        self._translate_thread.progress.connect(
+            lambda msg: self.ai_translate_btn.setText(msg)
+        )
+        self._translate_thread.start()
+
+    def _on_translate_finished(self, translations):
+        self.ai_translate_btn.setEnabled(True)
+        self.ai_translate_btn.setText("AIで仮翻訳")
+        self._cleanup_thread()
+
+        applied = 0
+        for row in range(self.table.rowCount()):
+            orig_item = self.table.item(row, 1)
+            trans_item = self.table.item(row, 2)
+            if not orig_item or not trans_item:
+                continue
+            orig = orig_item.text().strip()
+            if orig in translations and not trans_item.text().strip():
+                trans_item.setText(translations[orig])
+                applied += 1
+
+        if applied > 0:
+            QMessageBox.information(
+                self, "完了",
+                f"{applied} 件の仮翻訳を適用しました。\n"
+                "内容を確認してから辞書に追加してください。"
+            )
+        else:
+            QMessageBox.information(self, "情報", "適用可能な翻訳結果がありませんでした。")
+
+    def _on_translate_error(self, error_msg):
+        self.ai_translate_btn.setEnabled(True)
+        self.ai_translate_btn.setText("AIで仮翻訳")
+        self._cleanup_thread()
+        QMessageBox.warning(self, "エラー", f"AI翻訳に失敗しました:\n{error_msg}")
+
+    def _select_all(self):
+        self._set_visible_checkboxes(True)
+
+    def _deselect_all(self):
+        self._set_visible_checkboxes(False)
+
+    def _add_selected(self):
+        selected = {}
+        no_translation = []
+
+        for row in range(self.table.rowCount()):
+            widget = self.table.cellWidget(row, 0)
+            if not widget:
+                continue
+            checkbox = widget.findChild(QCheckBox)
+            if not checkbox or not checkbox.isChecked():
+                continue
+
+            orig_item = self.table.item(row, 1)
+            trans_item = self.table.item(row, 2)
+            if not orig_item or not trans_item:
+                continue
+
+            orig = orig_item.text().strip()
+            trans = trans_item.text().strip()
+            if orig and trans:
+                selected[orig] = trans
+            elif orig:
+                no_translation.append(orig)
+
+        if no_translation:
+            reply = QMessageBox.warning(
+                self, "訳文未入力",
+                f"{len(no_translation)} 件の項目に訳文が入力されていません。\n"
+                "訳文のない項目を除外して続行しますか？",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.No:
+                return
+
+        if selected:
+            current_terms = self.glossary.get_terms()
+            current_terms.update(selected)
+            self.glossary.set_terms(current_terms)
+            self.selected_terms = selected
+
+        self._cleanup_thread()
+        self.accept()
+
+    def reject(self):
+        self._cleanup_thread()
+        super().reject()
 
     def get_added_count(self):
         return len(self.selected_terms)
