@@ -3,6 +3,33 @@ import json
 import os
 import re
 
+PACK_FORMATS = {
+    "1.16.x": 6,
+    "1.17.x": 7,
+    "1.18.x": 8,
+    "1.19.0-1.19.3": 9,
+    "1.19.4": 12,
+    "1.20.0-1.20.1": 15,
+    "1.20.2": 18,
+    "1.20.3-1.20.4": 22,
+    "1.21.0-1.21.3": 34,
+    "1.21.4": 42,
+}
+
+TARGET_LANGUAGES = {
+    "ja_jp": ("Japanese", "日本語"),
+    "zh_cn": ("Simplified Chinese", "簡体字中国語"),
+    "ko_kr": ("Korean", "韓国語"),
+    "fr_fr": ("French", "フランス語"),
+    "de_de": ("German", "ドイツ語"),
+    "es_es": ("Spanish", "スペイン語"),
+    "pt_br": ("Portuguese (BR)", "ポルトガル語 (ブラジル)"),
+    "ru_ru": ("Russian", "ロシア語"),
+    "it_it": ("Italian", "イタリア語"),
+    "pl_pl": ("Polish", "ポーランド語"),
+}
+
+
 class FileHandler:
     def _normalize_escapes(self, text):
         """Fix escaped characters that should be plain in final output.
@@ -116,47 +143,39 @@ class FileHandler:
             result[key.strip()] = val.strip()
         return result
 
-    def save_resource_pack(self, output_path, mod_name, translations, lang_path="en_us.json"):
-        """Generates a resource pack directory with the translations."""
-        target_path = lang_path.replace('en_us', 'ja_jp')
-        if target_path == lang_path and 'ja_jp' not in target_path:
+    def save_resource_pack(self, output_path, mod_name, translations, lang_path="en_us.json",
+                           pack_format=15, target_lang="ja_jp"):
+        target_path = lang_path.replace('en_us', target_lang)
+        if target_path == lang_path and target_lang not in target_path:
              pass 
         
-        # Ensure output directory exists
         if not os.path.exists(output_path):
             os.makedirs(output_path)
             
-        # pack.mcmeta
         pack_meta = {
             "pack": {
-                "pack_format": 15,
+                "pack_format": pack_format,
                 "description": f"Translations for {mod_name}"
             }
         }
         with open(os.path.join(output_path, 'pack.mcmeta'), 'w', encoding='utf-8') as f:
             json.dump(pack_meta, f, indent=2)
             
-        # Translation file
-        # Create dir for assets/.../lang/
         full_target_path = os.path.join(output_path, target_path)
         os.makedirs(os.path.dirname(full_target_path), exist_ok=True)
         
-        # Normalize escapes before saving
         normalized = self._normalize_translations(translations)
         with open(full_target_path, 'w', encoding='utf-8') as f:
             json.dump(normalized, f, indent=2, ensure_ascii=False)
 
-    def save_merged_resource_pack(self, output_path, mod_data_list):
-        """
-        Generates a single resource pack directory containing translations for multiple MODs.
-        """
+    def save_merged_resource_pack(self, output_path, mod_data_list,
+                                   pack_format=15, target_lang="ja_jp"):
         if not os.path.exists(output_path):
             os.makedirs(output_path)
 
-        # pack.mcmeta
         pack_meta = {
             "pack": {
-                "pack_format": 15,
+                "pack_format": pack_format,
                 "description": "Merged Translations Pack"
             }
         }
@@ -168,13 +187,11 @@ class FileHandler:
             if not translations:
                 continue
                 
-            # Determine target path (en_us -> ja_jp)
-            target_path = mod["target_file"].replace('en_us', 'ja_jp')
+            target_path = mod["target_file"].replace('en_us', target_lang)
             
             full_target_path = os.path.join(output_path, target_path)
             os.makedirs(os.path.dirname(full_target_path), exist_ok=True)
             
-            # Normalize escapes before saving
             normalized = self._normalize_translations(translations)
             with open(full_target_path, 'w', encoding='utf-8') as f:
                 json.dump(normalized, f, indent=2, ensure_ascii=False)

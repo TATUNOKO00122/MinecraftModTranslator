@@ -239,10 +239,10 @@ def convert_quest_data(quest_data, prefix, translations):
     return count
 
 
-def export_ftbquest(quests_folder, output_folder, modpack_name, translations):
+def export_ftbquest(quests_folder, output_folder, modpack_name, translations, target_lang="ja_jp"):
     """
     Export FTB Quest language file to resource pack format.
-    Only outputs ja_jp.json to assets/ftbquests/lang/ (no SNBT conversion)
+    Outputs {target_lang}.json to assets/ftbquests/lang/ (no SNBT conversion)
     Returns lang_count
     """
     import json
@@ -254,15 +254,14 @@ def export_ftbquest(quests_folder, output_folder, modpack_name, translations):
     
     for key, value in translations.items():
         if value:
-            # Normalize escaped quotes before saving
             normalized_value = value.replace('\\"', '"').replace('\\\"', '"')
             lang_dict[key] = normalized_value
     
-    ja_jp_path = os.path.join(lang_output, "ja_jp.json")
-    with open(ja_jp_path, 'w', encoding='utf-8') as f:
+    lang_path = os.path.join(lang_output, f"{target_lang}.json")
+    with open(lang_path, 'w', encoding='utf-8') as f:
         json.dump(lang_dict, f, ensure_ascii=False, indent=2)
     
-    print(f"FTB Quest Export: {len(lang_dict)} translations to resource pack")
+    print(f"FTB Quest Export: {len(lang_dict)} translations to resource pack ({target_lang})")
     return len(lang_dict)
 
 

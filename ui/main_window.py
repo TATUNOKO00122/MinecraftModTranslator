@@ -995,10 +995,13 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "エラー", f"FTBクエストの読み込みに失敗しました:\n{e}")
             
     def detect_source_type(self, path):
-        """Detect if path is a MOD (has en_us) or resource pack (has ja_jp)"""
+        """Detect if path is a MOD (has en_us) or resource pack (has target lang file)"""
         import zipfile
+        settings = self.settings_dialog.get_settings()
+        target_lang = settings.get("target_lang", "ja_jp")
+        
         has_en = False
-        has_ja = False
+        has_target = False
         has_mcmeta = False
         
         try:
@@ -1009,8 +1012,8 @@ class MainWindow(QMainWindow):
                             has_mcmeta = True
                         if 'en_us' in f:
                             has_en = True
-                        if 'ja_jp' in f:
-                            has_ja = True
+                        if target_lang in f:
+                            has_target = True
             else:
                 with zipfile.ZipFile(path, 'r') as zf:
                     for f in zf.namelist():
@@ -1018,16 +1021,16 @@ class MainWindow(QMainWindow):
                             has_mcmeta = True
                         if 'en_us' in f:
                             has_en = True
-                        if 'ja_jp' in f:
-                            has_ja = True
+                        if target_lang in f:
+                            has_target = True
         except:
             return None
         
-        if has_mcmeta and has_ja and not has_en:
+        if has_mcmeta and has_target and not has_en:
             return "resourcepack"
         elif has_en:
             return "mod"
-        elif has_ja:
+        elif has_target:
             return "resourcepack"
         return None
     
@@ -1043,7 +1046,8 @@ class MainWindow(QMainWindow):
         self.mod_list.setEnabled(False)
         self.editor.setEnabled(False)
 
-        self.rp_thread = ResourcePackImportThread(path, self.loaded_mods, self.file_handler, self.memory)
+        self.rp_thread = ResourcePackImportThread(path, self.loaded_mods, self.file_handler, self.memory,
+                                                   target_lang=self.settings_dialog.get_settings().get("target_lang", "ja_jp"))
         self.rp_thread.progress.connect(self.on_rp_import_progress)
         self.rp_thread.finished.connect(self.on_rp_import_finished)
         self.rp_thread.error.connect(self.on_rp_import_error)
@@ -1222,7 +1226,8 @@ class MainWindow(QMainWindow):
         # Create translator thread with memory for progressive saving
         self.translator_thread = TranslatorThread(
             items, api_key, model, glossary_terms, parallel_count,
-            memory=self.memory, mod_name=mod_name
+            memory=self.memory, mod_name=mod_name,
+            target_lang=settings.get("target_lang", "ja_jp")
         )
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self.on_translate_finished)
@@ -1479,7 +1484,8 @@ class MainWindow(QMainWindow):
         self.translation_total_items = len(items)
         self.translation_original_items = items.copy()
         
-        self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms, parallel_count)
+        self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms, parallel_count,
+                                                   target_lang=settings.get("target_lang", "ja_jp"))
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self._on_batch_translate_finished)
         self.translator_thread.stopped.connect(self._on_batch_translate_stopped)
@@ -1869,29 +1875,28 @@ class MainWindow(QMainWindow):
         
         start_dir = self._get_export_dir()
         
-        # Ask for parent directory
         parent_dir = QFileDialog.getExistingDirectory(self, "リソースパック保存先フォルダを選択", start_dir)
         
         if parent_dir:
+            settings = self.settings_dialog.get_settings()
             try:
                 save_path = os.path.join(parent_dir, default_folder_name)
                 
-                # Check if exists
                 if os.path.exists(save_path):
                     confirm = QMessageBox.question(self, "上書き確認", f"フォルダ '{default_folder_name}' は既に存在します。\n上書きしますか？")
                     if confirm != QMessageBox.Yes:
                         return
 
-                # Sync current editor state first
                 current_translations = self.editor.get_translations()
                 self.file_handler.save_resource_pack(
                     save_path, 
                     mod_data['name'], 
                     current_translations, 
-                    mod_data['target_file']
+                    mod_data['target_file'],
+                    pack_format=settings.get("pack_format", 15),
+                    target_lang=settings.get("target_lang", "ja_jp")
                 )
                 
-                # Update Memory
                 self.memory.update(current_translations)
                 
                 QMessageBox.information(self, "成功", f"リソースパックを保存しました:\n{save_path}")
@@ -1908,6 +1913,10 @@ class MainWindow(QMainWindow):
             return
         
         try:
+            settings = self.settings_dialog.get_settings()
+            target_lang = settings.get("target_lang", "ja_jp")
+            pack_format = settings.get("pack_format", 15)
+            
             if self.current_mod_path:
                 self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
             
@@ -1919,19 +1928,18 @@ class MainWindow(QMainWindow):
                 integrated_count = 0
                 ftb_count = 0
                 
-                # 通常のMODを処理
                 for mod_data in mod_data_list:
                     if mod_data.get("type") == "ftbquest":
-                        continue  # FTBクエストは後で処理
+                        continue
                         
                     translations = mod_data["translations"]
                     if not translations:
                         continue
                     
                     target_file = mod_data["target_file"]
-                    ja_target = target_file.replace('en_us', 'ja_jp')
+                    lang_target = target_file.replace('en_us', target_lang)
                     
-                    output_path = os.path.join(parent_dir, ja_target)
+                    output_path = os.path.join(parent_dir, lang_target)
                     output_dir = os.path.dirname(output_path)
                     
                     existing_data = {}
@@ -1968,7 +1976,8 @@ class MainWindow(QMainWindow):
                         path,
                         parent_dir,
                         modpack_name,
-                        translations
+                        translations,
+                        target_lang=target_lang
                     )
                     ftb_count += 1
                     self.memory.update(translations)
@@ -1992,7 +2001,11 @@ class MainWindow(QMainWindow):
                 regular_mods = [m for m in mod_data_list if m.get("type") != "ftbquest"]
                 
                 if regular_mods:
-                    self.file_handler.save_merged_resource_pack(save_path, regular_mods)
+                    self.file_handler.save_merged_resource_pack(
+                        save_path, regular_mods,
+                        pack_format=pack_format,
+                        target_lang=target_lang
+                    )
                 
                 for ftb_mod in ftb_mods:
                     quests_folder = None
@@ -2007,7 +2020,8 @@ class MainWindow(QMainWindow):
                             quests_folder, 
                             save_path, 
                             modpack_name, 
-                            ftb_mod["translations"]
+                            ftb_mod["translations"],
+                            target_lang=target_lang
                         )
                 
                 for mod in mod_data_list:
@@ -2089,6 +2103,9 @@ class MainWindow(QMainWindow):
         
         all_translations = {}
         
+        settings = self.settings_dialog.get_settings()
+        target_lang = settings.get("target_lang", "ja_jp")
+        
         try:
             if msg_box.clickedButton() == btn_zip:
                 file_path, _ = QFileDialog.getOpenFileName(self, "リソースパック (Zip) を選択", "", "Zip Files (*.zip)")
@@ -2097,7 +2114,7 @@ class MainWindow(QMainWindow):
                 import zipfile
                 with zipfile.ZipFile(file_path, 'r') as zf:
                     for f in zf.namelist():
-                        if f.endswith('ja_jp.json') or f.endswith('ja_jp.lang'):
+                        if f.endswith(f'{target_lang}.json') or f.endswith(f'{target_lang}.lang'):
                             try:
                                 with zf.open(f) as zfile:
                                     content = zfile.read().decode('utf-8')
@@ -2116,7 +2133,7 @@ class MainWindow(QMainWindow):
                 
                 for root, dirs, files in os.walk(dir_path):
                     for f in files:
-                        if f.endswith('ja_jp.json') or f.endswith('ja_jp.lang'):
+                        if f.endswith(f'{target_lang}.json') or f.endswith(f'{target_lang}.lang'):
                             full_path = os.path.join(root, f)
                             rel_path = os.path.relpath(full_path, dir_path)
                             try:
@@ -2134,7 +2151,7 @@ class MainWindow(QMainWindow):
                 return
 
             if not all_translations:
-                QMessageBox.warning(self, "エラー", "ja_jp ファイルが見つかりませんでした。")
+                QMessageBox.warning(self, "エラー", f"{target_lang} ファイルが見つかりませんでした。")
                 return
 
             applied_count = 0
@@ -2142,12 +2159,12 @@ class MainWindow(QMainWindow):
             
             for mod_path, mod_data in self.loaded_mods.items():
                 target_file = mod_data["target_file"]
-                ja_target = target_file.replace('en_us', 'ja_jp')
+                lang_target = target_file.replace('en_us', target_lang)
                 mod_type = mod_data.get("type", "mod")
                 
                 for pack_path, translations in all_translations.items():
                     pack_path_normalized = pack_path.replace('\\', '/')
-                    ja_target_normalized = ja_target.replace('\\', '/')
+                    ja_target_normalized = lang_target.replace('\\', '/')
                     
                     matched = False
                     

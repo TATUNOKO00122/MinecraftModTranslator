@@ -8,12 +8,13 @@ class ResourcePackImportThread(QThread):
     finished = Signal(dict, int, list) # all_translations, applied_count, matched_mods
     error = Signal(str)
 
-    def __init__(self, path, loaded_mods, file_handler, memory):
+    def __init__(self, path, loaded_mods, file_handler, memory, target_lang="ja_jp"):
         super().__init__()
         self.path = path
         self.loaded_mods = loaded_mods
         self.file_handler = file_handler
         self.memory = memory
+        self.target_lang = target_lang
 
     def run(self):
         all_translations = {}
@@ -23,7 +24,7 @@ class ResourcePackImportThread(QThread):
                 files_to_scan = []
                 for root, _, files in os.walk(self.path):
                     for f in files:
-                        if f.endswith('ja_jp.json') or f.endswith('ja_jp.lang'):
+                        if f.endswith(f'{self.target_lang}.json') or f.endswith(f'{self.target_lang}.lang'):
                             files_to_scan.append(os.path.join(root, f))
                 
                 total_files = len(files_to_scan)
@@ -44,7 +45,7 @@ class ResourcePackImportThread(QThread):
             else:
                 with zipfile.ZipFile(self.path, 'r') as zf:
                     namelist = zf.namelist()
-                    files_to_scan = [f for f in namelist if f.endswith('ja_jp.json') or f.endswith('ja_jp.lang')]
+                    files_to_scan = [f for f in namelist if f.endswith(f'{self.target_lang}.json') or f.endswith(f'{self.target_lang}.lang')]
                     total_files = len(files_to_scan)
                     
                     for i, f in enumerate(files_to_scan):
@@ -71,7 +72,7 @@ class ResourcePackImportThread(QThread):
             # Match with loaded mods
             for mod_path, mod_data in self.loaded_mods.items():
                 target_file = mod_data["target_file"]
-                ja_target = target_file.replace('en_us', 'ja_jp')
+                ja_target = target_file.replace('en_us', self.target_lang)
                 mod_type = mod_data.get("type", "mod")
                 
                 matched = False

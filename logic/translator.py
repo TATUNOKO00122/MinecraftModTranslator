@@ -5,8 +5,9 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PySide6.QtCore import QThread, Signal
 
+from logic.file_handler import TARGET_LANGUAGES
 
-# Variable patterns to protect during translation
+
 VARIABLE_PATTERNS = [
     r'\{[a-zA-Z_][a-zA-Z0-9_]*\}',   # {player}, {name}, {item}
     r'\{[0-9]+\}',                    # {0}, {1}, {2}
@@ -140,26 +141,24 @@ class TranslatorThread(QThread):
     validation_finished = Signal(dict)  # {key: {"issues": [...], "reviewed": False}}
 
     def __init__(self, items, api_key, model, glossary=None, parallel_count=3, 
-                 memory=None, mod_name=None):
+                 memory=None, mod_name=None, target_lang="ja_jp"):
         super().__init__()
-        self.items = items # dict of key: source
+        self.items = items
         self.api_key = api_key
         self.model = model
         self.glossary = glossary or {}
         self.is_running = True
-        self._partial_results = {}  # Store partial results for stop
-        # Dynamic batch sizing: target ~4000 characters per batch
+        self._partial_results = {}
         self.target_batch_chars = 4000
-        self.min_batch_size = 5    # Minimum items per batch
-        self.max_batch_size = 150  # Maximum items per batch
-        # Parallel processing settings
-        self.parallel_count = max(1, min(parallel_count, 10))  # Clamp between 1-10
-        self._rate_limit_hit = False  # Flag for adaptive throttling
-        # Progressive save settings
-        self.memory = memory  # TranslationMemory instance for progressive saving
-        self.mod_name = mod_name  # MOD name for context
+        self.min_batch_size = 5
+        self.max_batch_size = 150
+        self.parallel_count = max(1, min(parallel_count, 10))
+        self._rate_limit_hit = False
+        self.memory = memory
+        self.mod_name = mod_name
         self._batches_since_save = 0
-        self.save_interval = 5  # Save every N batches
+        self.save_interval = 5
+        self.target_lang = target_lang
 
     def _create_batches(self, items):
         """Create batches based on character count, not fixed item count."""
@@ -345,39 +344,22 @@ class TranslatorThread(QThread):
             "X-Title": "Minecraft MOD Translator Desktop"
         }
         
-        # Prepare content as JSON (with protected variables)
         prompt_content = json.dumps(protected_items, ensure_ascii=False)
         
+        lang_info = TARGET_LANGUAGES.get(self.target_lang, ("Japanese", "日本語"))
+        lang_english = lang_info[0]
+        
         system_content = (
-            "You are a professional translator for Minecraft mods. "
-            "Your task is to translate English text into natural Japanese.\n"
-            "You will receive a JSON object. The keys are identifiers (DO NOT CHANGE KEYS). The values are the English text to translate.\n"
-            "Rules:\n"
-            "1. Translate the value of each key from English to Japanese.\n"
-            "2. CRITICAL: Keep ALL placeholders like __VAR_0__, __VAR_1__ EXACTLY as they are. DO NOT modify, translate, or remove them.\n"
-            "3. TRANSLATION STYLE:\n"
-            "   A) Use ESTABLISHED Minecraft/gaming terms in Japanese (these are standard):\n"
-            "     * 'Enchant/Enchanted' → 'エンチャント/エンチャントされた' (NOT '魔法' or '魔法の')\n"
-            "     * 'Nether' → 'ネザー'\n"
-            "     * 'Ender' → 'エンダー'\n"
-            "     * 'Golem' → 'ゴーレム'\n"
-            "     * 'Potion' → 'ポーション'\n"
-            "     * 'Level' → 'レベル'\n"
-            "     * 'Skill' → 'スキル'\n"
-            "     * 'Quest' → 'クエスト'\n"
-            "   B) Use NATURAL Japanese for common descriptive words:\n"
-            "     * 'Magic Sword' → '魔法の剣' (NOT 'マジックソード')\n"
-            "     * 'Fire Elemental' → '炎の精霊'\n"
-            "     * 'Healing Potion' → '回復ポーション'\n"
-            "     * 'Dragon Scale' → '竜の鱗'\n"
-            "     * 'Ice Golem' → '氷のゴーレム'\n"
-            "   C) Use katakana for original proper nouns (unique made-up names):\n"
-            "     * 'Everbright' → 'エバーブライト'\n"
-            "   Examples:\n"
-            "     * 'Enchanted Bow' → 'エンチャントされた弓' (NOT '魔法の弓')\n"
-            "     * 'Enchanted Diamond Sword' → 'エンチャントされたダイヤの剣'\n"
-            "4. Do NOT translate ONLY if the term is in the glossary below (keep glossary terms as-is).\n"
-            "5. Output ONLY the valid JSON object. Do not include markdown formatting (```json ... ```)."
+            f"You are a professional translator for Minecraft mods. "
+            f"Your task is to translate English text into natural {lang_english}.\n"
+            f"You will receive a JSON object. The keys are identifiers (DO NOT CHANGE KEYS). The values are the English text to translate.\n"
+            f"Rules:\n"
+            f"1. Translate the value of each key from English to {lang_english}.\n"
+            f"2. CRITICAL: Keep ALL placeholders like __VAR_0__, __VAR_1__ EXACTLY as they are. DO NOT modify, translate, or remove them.\n"
+            f"3. Use established Minecraft/gaming terms consistently. "
+            f"Translate descriptively into natural {lang_english}, keeping proper nouns as transliterations.\n"
+            f"4. Do NOT translate ONLY if the term is in the glossary below (keep glossary terms as-is).\n"
+            f"5. Output ONLY the valid JSON object. Do not include markdown formatting (```json ... ```)."
         )
 
         if self.glossary:
@@ -398,7 +380,7 @@ class TranslatorThread(QThread):
                 },
                 {
                     "role": "user",
-                    "content": f"Translate the following values to Japanese:\n\n{prompt_content}"
+                    "content": f"Translate the following values to {lang_english}:\n\n{prompt_content}"
                 }
             ],
         }
