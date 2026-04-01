@@ -10,6 +10,7 @@ from logic.translator import TranslatorThread
 from logic.translation_memory import TranslationMemory
 from logic.glossary import Glossary
 from logic import ftbquest_handler
+from logic import datapack_handler
 from ui.editor_widget import EditorWidget
 from ui.settings_dialog import SettingsDialog
 from ui.glossary_dialog import GlossaryDialog
@@ -129,6 +130,7 @@ class MainWindow(QMainWindow):
         self.mod_filter.addItem("原文と同じ", "has_same")
         self.mod_filter.addItem("ローマ字あり", "has_roman")
         self.mod_filter.addItem("FTBクエスト", "ftbquest")
+        self.mod_filter.addItem("データパック", "datapack")
         self.mod_filter.addItem("MODのみ", "mod")
         self.mod_filter.currentIndexChanged.connect(self.filter_mod_list)
         left_layout.addWidget(self.mod_filter)
@@ -448,6 +450,9 @@ class MainWindow(QMainWindow):
             elif filter_type == "ftbquest":
                 is_ftb = mod_data.get("type") == "ftbquest"
                 item.setHidden(not is_ftb)
+            elif filter_type == "datapack":
+                is_dp = mod_data.get("type") == "datapack"
+                item.setHidden(not is_dp)
             elif filter_type == "mod":
                 is_ftb = mod_data.get("type") == "ftbquest"
                 item.setHidden(is_ftb)
@@ -467,7 +472,7 @@ class MainWindow(QMainWindow):
                 translated = self._count_translated(mod_data)
                 rate = translated / total if total > 0 else 0
                 load_index = self._mod_load_order.index(mod_path) if mod_path in self._mod_load_order else 9999
-                is_ftb = 0 if mod_data.get("type") == "ftbquest" else 1  # FTBクエストを優先 (0 = 上)
+                is_ftb = 0 if mod_data.get("type") in ("ftbquest", "datapack") else 1
                 items_data.append({
                     "path": mod_path,
                     "name": mod_data["name"],
@@ -895,7 +900,7 @@ class MainWindow(QMainWindow):
             self.process_path(f)
     
     def process_path(self, path):
-        """Process a path: Minecraft folder, MOD, FTB Quest, or resource pack"""
+        """Process a path: Minecraft folder, MOD, FTB Quest, datapack, or resource pack"""
         if os.path.isdir(path):
             ftbquest_folder = ftbquest_handler.detect_ftbquests(path)
             mods_folder = os.path.join(path, "mods")
@@ -920,11 +925,28 @@ class MainWindow(QMainWindow):
                         self.load_source(mod_file)
                     self.progress_bar.hide()
                     loaded_items.append(f"MOD {len(mod_files)}個")
+
+            # Datapack scan in openloader/config directories
+            openloader_dir = os.path.join(path, "config", "openloader", "data")
+            if os.path.isdir(openloader_dir):
+                dp_dirs = [
+                    os.path.join(openloader_dir, d)
+                    for d in os.listdir(openloader_dir)
+                    if datapack_handler.detect_datapack(os.path.join(openloader_dir, d))
+                ]
+                for dp_dir in dp_dirs:
+                    self.load_datapack(dp_dir, mods_dir=mods_folder)
+                    loaded_items.append(f"データパック: {os.path.basename(dp_dir)}")
+
+            # Also check if the path itself is a datapack
+            if not loaded_items and datapack_handler.detect_datapack(path):
+                self.load_datapack(path)
+                loaded_items.append("データパック")
             
             self.statusBar().showMessage("読み込み完了", 3000)
             
             if loaded_items:
-                QMessageBox.information(self, "Minecraftフォルダ検出", 
+                QMessageBox.information(self, "読み込み完了", 
                     f"読み込み完了: {', '.join(loaded_items)}")
                 return
         
@@ -994,7 +1016,63 @@ class MainWindow(QMainWindow):
                 
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"FTBクエストの読み込みに失敗しました:\n{e}")
-            
+    
+    def load_datapack(self, datapack_path, mods_dir=None):
+        if datapack_path in self.loaded_mods:
+            return
+
+        try:
+            result = datapack_handler.load_datapack(datapack_path, mods_dir=mods_dir)
+            pack_name, primary_ns, lang_dict, item_sources = result
+
+            if not lang_dict:
+                print(f"Skipping datapack {pack_name}: No translatable text found.")
+                return
+
+            char_count = sum(len(v) for v in lang_dict.values())
+
+            self.loaded_mods[datapack_path] = {
+                "name": f"[データパック] {pack_name}",
+                "original": lang_dict,
+                "translations": {},
+                "files": [],
+                "target_file": f"assets/{primary_ns}/lang/en_us.json",
+                "type": "datapack",
+                "namespace": primary_ns,
+                "_char_count": char_count,
+                "_item_sources": item_sources,
+            }
+
+            memory_translations = self.memory.apply_to(lang_dict)
+            if memory_translations:
+                self.loaded_mods[datapack_path]["translations"].update(memory_translations)
+
+            from PySide6.QtWidgets import QListWidgetItem
+            from PySide6.QtGui import QColor
+
+            total = len(lang_dict)
+            translated = self._count_translated(self.loaded_mods[datapack_path])
+
+            item = QListWidgetItem(self._format_mod_display(f"[DP] {pack_name}", translated, total))
+            item.setToolTip(f"データパック: {pack_name}\n名前空間: {primary_ns}\n{datapack_path}")
+            item.setData(Qt.UserRole, datapack_path)
+
+            if total > 0 and translated == total:
+                item.setForeground(QColor("#4ade80"))
+            else:
+                item.setForeground(QColor("#d4d4d4"))
+
+            self.mod_list.addItem(item)
+
+            if datapack_path not in self._mod_load_order:
+                self._mod_load_order.append(datapack_path)
+
+            if self.mod_list.count() == 1:
+                self.mod_list.setCurrentItem(item)
+
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"データパックの読み込みに失敗しました:\n{e}")
+        
     def detect_source_type(self, path):
         """Detect if path is a MOD (has en_us) or resource pack (has target lang file)"""
         import zipfile
@@ -1090,29 +1168,38 @@ class MainWindow(QMainWindow):
         self.rp_thread = None
 
     def open_file_dialog(self):
-        # Ask user what to open
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("開く")
         msg_box.setText("何を開きますか？")
         btn_file = msg_box.addButton("MODファイル", QMessageBox.AcceptRole)
         btn_folder = msg_box.addButton("Minecraftディレクトリ", QMessageBox.ActionRole)
+        btn_datapack = msg_box.addButton("データパック", QMessageBox.ActionRole)
         msg_box.addButton("キャンセル", QMessageBox.RejectRole)
         msg_box.exec()
         
         if msg_box.clickedButton() == btn_file:
-            # Native file dialog for MOD files
             file_paths, _ = QFileDialog.getOpenFileNames(
                 self, "MODファイルを開く", "", "MODファイル (*.zip *.jar);;すべてのファイル (*)"
             )
             for path in file_paths:
                 self.process_path(path)
         elif msg_box.clickedButton() == btn_folder:
-            # Native folder dialog for Minecraft directory
             folder_path = QFileDialog.getExistingDirectory(
                 self, "Minecraftディレクトリを開く"
             )
             if folder_path:
                 self.process_path(folder_path)
+        elif msg_box.clickedButton() == btn_datapack:
+            folder_path = QFileDialog.getExistingDirectory(
+                self, "データパックフォルダを選択"
+            )
+            if folder_path:
+                if datapack_handler.detect_datapack(folder_path):
+                    self.load_datapack(folder_path)
+                else:
+                    QMessageBox.warning(self, "エラー",
+                        "選択したフォルダはデータパックではありません。\n"
+                        "pack.mcmeta と data/ フォルダが必要です。")
 
     def load_source(self, path):
         if path in self.loaded_mods:
@@ -1949,14 +2036,19 @@ class MainWindow(QMainWindow):
 
     def _export_single(self):
         mod_data = self.loaded_mods[self.current_mod_path]
-        default_folder_name = f"{mod_data['name']}-resources"
+        settings = self.settings_dialog.get_settings()
+
+        if mod_data.get("type") == "datapack":
+            namespace = mod_data.get("namespace", "unknown")
+            default_folder_name = f"datapack-{namespace}-resources"
+        else:
+            default_folder_name = f"{mod_data['name']}-resources"
         
         start_dir = self._get_export_dir()
         
         parent_dir = QFileDialog.getExistingDirectory(self, "リソースパック保存先フォルダを選択", start_dir)
         
         if parent_dir:
-            settings = self.settings_dialog.get_settings()
             try:
                 save_path = os.path.join(parent_dir, default_folder_name)
                 
@@ -1966,14 +2058,24 @@ class MainWindow(QMainWindow):
                         return
 
                 current_translations = self.editor.get_translations()
-                self.file_handler.save_resource_pack(
-                    save_path, 
-                    mod_data['name'], 
-                    current_translations, 
-                    mod_data['target_file'],
-                    pack_format=settings.get("pack_format", 15),
-                    target_lang=settings.get("target_lang", "ja_jp")
-                )
+
+                if mod_data.get("type") == "datapack":
+                    namespace = mod_data.get("namespace", "unknown")
+                    non_empty = {k: v for k, v in current_translations.items() if v}
+                    datapack_handler.export_datapack_translations(
+                        save_path, namespace, non_empty,
+                        pack_format=settings.get("pack_format", 15),
+                        target_lang=settings.get("target_lang", "ja_jp")
+                    )
+                else:
+                    self.file_handler.save_resource_pack(
+                        save_path, 
+                        mod_data['name'], 
+                        current_translations, 
+                        mod_data['target_file'],
+                        pack_format=settings.get("pack_format", 15),
+                        target_lang=settings.get("target_lang", "ja_jp")
+                    )
                 
                 self.memory.update(current_translations)
                 
@@ -2007,7 +2109,7 @@ class MainWindow(QMainWindow):
                 ftb_count = 0
                 
                 for mod_data in mod_data_list:
-                    if mod_data.get("type") == "ftbquest":
+                    if mod_data.get("type") in ("ftbquest", "datapack"):
                         continue
                         
                     translations = mod_data["translations"]
@@ -2060,10 +2162,32 @@ class MainWindow(QMainWindow):
                     ftb_count += 1
                     self.memory.update(translations)
                 
+                # データパックを処理
+                dp_count = 0
+                for path, mod_data in self.loaded_mods.items():
+                    if mod_data.get("type") != "datapack":
+                        continue
+                    
+                    translations = mod_data["translations"]
+                    if not translations:
+                        continue
+                    
+                    namespace = mod_data.get("namespace", "unknown")
+                    non_empty = {k: v for k, v in translations.items() if v}
+                    datapack_handler.export_datapack_translations(
+                        parent_dir, namespace, non_empty,
+                        pack_format=pack_format,
+                        target_lang=target_lang
+                    )
+                    dp_count += 1
+                    self.memory.update(translations)
+                
                 msg = f"既存リソースパックに統合しました:\n{parent_dir}\n"
                 msg += f"MOD: {integrated_count} 件"
                 if ftb_count > 0:
                     msg += f"\nFTBクエスト: {ftb_count} 件"
+                if dp_count > 0:
+                    msg += f"\nデータパック: {dp_count} 件"
                 QMessageBox.information(self, "成功", msg)
             else:
                 save_path = os.path.join(parent_dir, default_folder_name)
@@ -2076,7 +2200,8 @@ class MainWindow(QMainWindow):
                 mod_data_list = list(self.loaded_mods.values())
                 
                 ftb_mods = [m for m in mod_data_list if m.get("type") == "ftbquest"]
-                regular_mods = [m for m in mod_data_list if m.get("type") != "ftbquest"]
+                dp_mods = [m for m in mod_data_list if m.get("type") == "datapack"]
+                regular_mods = [m for m in mod_data_list if m.get("type") not in ("ftbquest", "datapack")]
                 
                 if regular_mods:
                     self.file_handler.save_merged_resource_pack(
@@ -2102,12 +2227,25 @@ class MainWindow(QMainWindow):
                             target_lang=target_lang
                         )
                 
+                for dp_mod in dp_mods:
+                    namespace = dp_mod.get("namespace", "unknown")
+                    translations = dp_mod.get("translations", {})
+                    non_empty = {k: v for k, v in translations.items() if v}
+                    if non_empty:
+                        datapack_handler.export_datapack_translations(
+                            save_path, namespace, non_empty,
+                            pack_format=pack_format,
+                            target_lang=target_lang
+                        )
+                
                 for mod in mod_data_list:
                     self.memory.update(mod["translations"])
                 
                 msg = f"{len(mod_data_list)} 個のMOD/クエストを保存しました:\n{save_path}"
                 if ftb_mods:
                     msg += f"\n(FTBクエスト {len(ftb_mods)} 件の言語ファイルを含む)"
+                if dp_mods:
+                    msg += f"\n(データパック {len(dp_mods)} 件の言語ファイルを含む)"
                 QMessageBox.information(self, "成功", msg)
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"保存に失敗しました:\n{e}")

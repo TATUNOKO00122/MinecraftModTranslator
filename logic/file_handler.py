@@ -76,6 +76,7 @@ class FileHandler:
     def load_folder(self, folder_path):
         """
         Loads a folder and finds translation files.
+        Searches both assets/ and data/ paths for lang files.
         Returns: (mod_name, found_files)
         """
         if not os.path.isdir(folder_path):
@@ -89,7 +90,8 @@ class FileHandler:
                 if f.endswith('.json') or f.endswith('.lang'):
                     full_path = os.path.join(root, f)
                     rel_path = os.path.relpath(full_path, folder_path)
-                    if 'assets' in rel_path and 'lang' in rel_path:
+                    if ('assets' in rel_path and 'lang' in rel_path) or \
+                       ('data' in rel_path and 'lang' in rel_path):
                         found_files.append(rel_path)
             
         return mod_name, found_files
