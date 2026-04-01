@@ -9,22 +9,50 @@ from logic.file_handler import TARGET_LANGUAGES
 
 
 VARIABLE_PATTERNS = [
-    r'\[calc:[a-zA-Z0-9_]+\]',        # [calc:blessed_hammer], [calc:damage]
-    r'\[[a-zA-Z0-9_]+\]',             # [entity], [item], [tag], etc.
-    r'\{[a-zA-Z_][a-zA-Z0-9_]*\}',   # {player}, {name}, {item}
-    r'\{[0-9]+\}',                    # {0}, {1}, {2}
-    r'\{[0-9]+\$[sdf]\}',             # {0$s}, {1$d}, {2$f}
-    r'%[0-9]*\$?[sdf]',               # %s, %d, %1$s, %2$d, %.2f
-    r'%%',                            # Escaped percent
-    r'§[0-9a-fk-or]',                 # Minecraft color codes §a, §r, §l, etc.
-    r'&[0-9a-fk-or]',                 # Alternate color codes &a, &r, etc.
-    r'[☀⚔❤✦✧★☆➤►▸●◆◇▲▼✹❂❃❄✴✵✶]',    # Game UI decorative symbols
-    r'\\n',                           # Newline escape
-    r'<br\s*/?>',                     # HTML line breaks
+    r'\[calc:[a-zA-Z0-9_]+\]',
+    r'\[[a-zA-Z0-9_]+\]',
+    r'\{[a-zA-Z_][a-zA-Z0-9_]*\}',
+    r'\{[0-9]+\}',
+    r'\{[0-9]+\$[sdf]\}',
+    r'%[0-9]*\$?[sdf]',
+    r'%%',
+    r'§[0-9a-fk-or]',
+    r'&[0-9a-fk-or]',
+    r'[☀⚔❤✦✧★☆➤►▸●◆◇▲▼✹❂❃❄✴✵✶]',
+    r'\\n',
+    r'<br\s*/?>',
+    r'</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^>]*)?>',
 ]
 
-# Compile patterns for efficiency
 COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in VARIABLE_PATTERNS]
+
+NUMBER_PATTERN = re.compile(r'\b\d+(?:[.,]\d+)*\b')
+
+CJK_PATTERN = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF]')
+
+NOTRANSLATE_PATTERNS = [
+    re.compile(r'^[a-zA-Z]\w*_\w+$'),
+    re.compile(r'^[a-z][a-z0-9_.]*:[a-z0-9_./]+$', re.I),
+    re.compile(r'^[\d%\.\\\+\-:,/\s]+$'),
+    re.compile(r'^.{1,2}$'),
+    re.compile(r'^[\W\d\s]*$', re.U),
+]
+
+
+def should_skip_translation(text, target_lang="ja_jp"):
+    if not text or not isinstance(text, str):
+        return True
+    trimmed = text.strip()
+    if not trimmed:
+        return True
+    for pattern in NOTRANSLATE_PATTERNS:
+        if pattern.match(trimmed):
+            return True
+    if target_lang.startswith("ja") and len(trimmed) > 2:
+        cjk_count = len(CJK_PATTERN.findall(trimmed))
+        if cjk_count / len(trimmed) > 0.3:
+            return True
+    return False
 
 
 def protect_variables(text):
@@ -52,9 +80,28 @@ def protect_variables(text):
         for start, end, placeholder in reversed(replacements):
             result = result[:start] + placeholder + result[end:]
     
+    result, variables = _protect_numbers(result, variables)
+    
     result, variables = _merge_adjacent_placeholders(result, variables)
     
     return result, variables
+
+
+def _protect_numbers(text, variables):
+    """変数パターン置換後のテキストから、プレースホルダ以外の数値を保護する。"""
+    parts = re.split(r'(__VAR_\d+__)', text)
+    result_parts = []
+    for part in parts:
+        if part.startswith('__VAR_'):
+            result_parts.append(part)
+            continue
+
+        def replacer(match):
+            variables.append(match.group())
+            return f"__VAR_{len(variables) - 1}__"
+
+        result_parts.append(NUMBER_PATTERN.sub(replacer, part))
+    return ''.join(result_parts), variables
 
 
 def _merge_adjacent_placeholders(text, variables):
@@ -93,18 +140,54 @@ def restore_variables(text, variables):
     return result
 
 
+def _fuzzy_restore(text, variables):
+    """AIがプレースホルダを改変した場合のフォールバック復元。"""
+    for i, var in enumerate(variables):
+        placeholder = f"__VAR_{i}__"
+        if placeholder in text:
+            continue
+        candidates = [
+            placeholder.replace('_', '-'),
+            placeholder.replace('__', '**'),
+            placeholder.replace('__', '``'),
+            f"[VAR_{i}]",
+            f"{{VAR_{i}}}",
+            f"VAR_{i}",
+        ]
+        for candidate in candidates:
+            if candidate in text:
+                text = text.replace(candidate, var, 1)
+                break
+    if '__VAR_' in text:
+        print(f"Warning: Unrestored placeholders remain: {text[:80]}...")
+    return text
+
+
+def extract_tags(text):
+    """テキストから全ての変数タグを抽出する。"""
+    if not text:
+        return []
+    tags = []
+    for pattern in COMPILED_PATTERNS:
+        tags.extend(m.group() for m in pattern.finditer(text))
+    tags.extend(NUMBER_PATTERN.findall(text))
+    return sorted(tags)
+
+
+def deep_tag_check(original, translated):
+    """ソースに存在するタグが翻訳結果に欠落していないか検証する。"""
+    source_tags = extract_tags(original)
+    if not source_tags:
+        return []
+    translated_tags = extract_tags(translated)
+    missing = set(source_tags) - set(translated_tags)
+    return [f"Missing tag in translation: {tag}" for tag in sorted(missing)]
+
+
 def validate_translation(original, translated):
     """
     Validate that translation doesn't have issues.
     Returns (is_valid, list_of_issues)
-    
-    Checks:
-    - Nested braces
-    - Full-width format specifiers
-    - Unreplaced placeholders
-    - Placeholder count mismatch
-    - Extreme length changes
-    - Untranslated text (English remaining)
     """
     issues = []
     
@@ -114,11 +197,12 @@ def validate_translation(original, translated):
     if not original:
         original = ""
     
-    # Check for nested braces {{...}}
+    missing_tags = deep_tag_check(original, translated)
+    issues.extend(missing_tags)
+    
     if '{{' in translated or '}}' in translated:
         issues.append(f"Nested braces detected: {translated[:50]}...")
     
-    # Check for full-width format specifiers (common LLM mistake)
     fullwidth_patterns = [
         (r'％[ｓｄｆ]', '%s/%d/%f with fullwidth'),
         (r'｛[^｝]*｝', 'Fullwidth braces'),
@@ -127,33 +211,25 @@ def validate_translation(original, translated):
         if re.search(pattern, translated):
             issues.append(f"{desc} detected in: {translated[:50]}...")
     
-    # Check if placeholder wasn't properly restored
     if '__VAR_' in translated:
         issues.append(f"Unreplaced placeholder in: {translated[:50]}...")
     
-    # Check placeholder count mismatch
     original_placeholders = len(re.findall(r'\{[^}]+\}|%[0-9]*\$?[sdf]', original))
     translated_placeholders = len(re.findall(r'\{[^}]+\}|%[0-9]*\$?[sdf]', translated))
     if original_placeholders != translated_placeholders:
         issues.append(f"Placeholder count mismatch: original={original_placeholders}, translated={translated_placeholders}")
     
-    # Check for extreme length changes (more than 4x longer or less than 1/4)
-    if len(original) > 10:  # Only check for non-trivial strings
+    if len(original) > 10:
         ratio = len(translated) / len(original)
         if ratio > 4:
             issues.append(f"Translation is {ratio:.1f}x longer than original")
         elif ratio < 0.25:
             issues.append(f"Translation is {ratio:.1f}x shorter than original")
     
-    # Check if translation looks untranslated (mostly ASCII for Japanese target)
-    # Skip if original has mostly non-ASCII (already in target language)
     ascii_ratio_original = sum(1 for c in original if ord(c) < 128) / max(len(original), 1)
     ascii_ratio_translated = sum(1 for c in translated if ord(c) < 128) / max(len(translated), 1)
     
-    # If original is mostly English (high ASCII) but translation is also mostly ASCII,
-    # it might not have been translated
     if ascii_ratio_original > 0.8 and ascii_ratio_translated > 0.9 and len(translated) > 20:
-        # Check if it's not just numbers/symbols
         if re.search(r'[A-Za-z]{4,}', translated):
             issues.append(f"May be untranslated (high ASCII ratio): {translated[:30]}...")
     
@@ -162,12 +238,12 @@ def validate_translation(original, translated):
 
 
 class TranslatorThread(QThread):
-    progress = Signal(int, int) # current, total
+    progress = Signal(int, int)
     finished = Signal(dict)
-    stopped = Signal(dict)  # Emitted when stopped with partial results
+    stopped = Signal(dict)
     error = Signal(str)
-    partial_save = Signal(dict)  # Signal for progressive saving
-    validation_finished = Signal(dict)  # {key: {"issues": [...], "reviewed": False}}
+    partial_save = Signal(dict)
+    validation_finished = Signal(dict)
 
     def __init__(self, items, api_key, model, glossary=None, parallel_count=3, 
                  memory=None, mod_name=None, target_lang="ja_jp"):
@@ -190,7 +266,6 @@ class TranslatorThread(QThread):
         self.target_lang = target_lang
 
     def _create_batches(self, items):
-        """Create batches based on character count, not fixed item count."""
         batches = []
         current_batch = {}
         current_chars = 0
@@ -198,7 +273,6 @@ class TranslatorThread(QThread):
         for key, text in items.items():
             text_len = len(str(text)) if text else 0
             
-            # If adding this item would exceed target and we have items, start new batch
             if current_chars + text_len > self.target_batch_chars and len(current_batch) >= self.min_batch_size:
                 batches.append(current_batch)
                 current_batch = {}
@@ -207,13 +281,11 @@ class TranslatorThread(QThread):
             current_batch[key] = text
             current_chars += text_len
             
-            # Force new batch if max size reached
             if len(current_batch) >= self.max_batch_size:
                 batches.append(current_batch)
                 current_batch = {}
                 current_chars = 0
         
-        # Add remaining items
         if current_batch:
             batches.append(current_batch)
         
@@ -266,7 +338,6 @@ class TranslatorThread(QThread):
         self.finished.emit(results)
 
     def _run_parallel(self, batches, results, validation_results, total_items):
-        """Execute batches in parallel using ThreadPoolExecutor."""
         processed = 0
         current_parallel = self.parallel_count
         
@@ -314,8 +385,6 @@ class TranslatorThread(QThread):
                 time.sleep(0.3)
     
     def _translate_batch_safe(self, batch_idx, items):
-        """Thread-safe wrapper for translate_batch_with_retry.
-        Returns tuple of (results, validation_results, rate_limited_flag)."""
         rate_limited = False
         try:
             result, validation = self.translate_batch_with_retry(items)
@@ -354,10 +423,28 @@ class TranslatorThread(QThread):
         if not self.is_running:
             return {}, {}
         
+        final_results = {}
+        validation_results = {}
+        
+        translatable = {}
+        for key, text in items.items():
+            if should_skip_translation(text, self.target_lang):
+                final_results[key] = text
+            else:
+                translatable[key] = text
+        
+        if not translatable:
+            return final_results, validation_results
+        
+        text_to_keys = {}
+        for key, text in translatable.items():
+            text_to_keys.setdefault(text, []).append(key)
+        unique_items = {keys[0]: text for text, keys in text_to_keys.items()}
+        
         protected_items = {}
         variable_map = {}
         
-        for key, text in items.items():
+        for key, text in unique_items.items():
             if text and isinstance(text, str):
                 protected_text, variables = protect_variables(text)
                 protected_items[key] = protected_text
@@ -365,7 +452,7 @@ class TranslatorThread(QThread):
             else:
                 protected_items[key] = text
                 variable_map[key] = []
-            
+        
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -405,8 +492,7 @@ class TranslatorThread(QThread):
         )
 
         if self.glossary:
-            # OPTIMIZATION: Only include glossary terms that appear in the source text
-            batch_text_lower = " ".join([str(v) for v in items.values()]).lower()
+            batch_text_lower = " ".join([str(v) for v in unique_items.values()]).lower()
             relevant_terms = {k: v for k, v in self.glossary.items() if k.lower() in batch_text_lower}
             
             if relevant_terms:
@@ -433,7 +519,6 @@ class TranslatorThread(QThread):
         result_json = response.json()
         content = result_json['choices'][0]['message']['content'].strip()
         
-        # Clean up code blocks if present
         if content.startswith("```json"):
             content = content[7:]
         if content.startswith("```"):
@@ -442,7 +527,6 @@ class TranslatorThread(QThread):
             content = content[:-3]
         content = content.strip()
         
-        # Extract JSON object from surrounding natural language
         first_brace = content.find('{')
         last_brace = content.rfind('}')
         if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
@@ -450,48 +534,53 @@ class TranslatorThread(QThread):
         
         translated = json.loads(content)
         
-        final_results = {}
-        validation_results = {}
+        unique_results = {}
         for key, translated_text in translated.items():
             if key in variable_map and variable_map[key]:
                 restored_text = restore_variables(translated_text, variable_map[key])
                 
-                is_valid, issues = validate_translation(items.get(key, ''), restored_text)
+                if '__VAR_' in restored_text:
+                    restored_text = _fuzzy_restore(restored_text, variable_map[key])
+                
+                is_valid, issues = validate_translation(unique_items.get(key, ''), restored_text)
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
                     validation_results[key] = {"issues": issues, "reviewed": False}
                 
-                final_results[key] = restored_text
+                unique_results[key] = restored_text
             else:
-                is_valid, issues = validate_translation(items.get(key, ''), translated_text)
+                is_valid, issues = validate_translation(unique_items.get(key, ''), translated_text)
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
                     validation_results[key] = {"issues": issues, "reviewed": False}
                 
-                final_results[key] = translated_text
+                unique_results[key] = translated_text
+        
+        for text, keys in text_to_keys.items():
+            representative_key = keys[0]
+            if representative_key in unique_results:
+                result_text = unique_results[representative_key]
+                for key in keys:
+                    final_results[key] = result_text
+                if representative_key in validation_results:
+                    for key in keys[1:]:
+                        validation_results[key] = validation_results[representative_key].copy()
         
         return final_results, validation_results
 
     def _progressive_save(self, results: dict, batch_sources: dict):
-        """
-        Save partial results to translation memory during translation.
-        This prevents data loss if the translation is interrupted.
-        """
         if not self.memory or not results:
             return
         
         try:
-            # Set context for the memory update
             self.memory.set_context(
                 mod_name=self.mod_name,
                 model=self.model,
-                sources=self.items  # Original source texts
+                sources=self.items
             )
             
-            # Update memory with partial results
             self.memory.update(results)
             
-            # Emit signal for UI update
             self.partial_save.emit(results)
             
             print(f"Progressive save: {len(results)} translations saved")
