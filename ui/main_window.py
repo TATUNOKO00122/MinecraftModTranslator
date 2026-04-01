@@ -15,6 +15,7 @@ from ui.settings_dialog import SettingsDialog
 from ui.glossary_dialog import GlossaryDialog
 from ui.term_extraction_dialog import TermExtractionDialog
 from logic.term_extractor import AITermExtractorThread
+from logic.resource_pack_handler import ResourcePackImportThread
 
 class NoScrollListWidget(QListWidget):
     """Custom QListWidget that prevents auto-scrolling when items are selected"""
@@ -407,8 +408,8 @@ class MainWindow(QMainWindow):
                 has_roman = False
                 for t in mod_data["translations"].values():
                     if t:
-                        # Remove color codes and placeholders
-                        text = re.sub(r'§.', '', t)
+                        # Remove color codes (§x and &x format) and placeholders
+                        text = re.sub(r'[§&][0-9a-fk-or]', '', t, flags=re.IGNORECASE)
                         text = re.sub(r'%(\d+\$)?[sdfc]', '', text)
                         if re.search(r'[A-Za-z]', text):
                             has_roman = True
@@ -436,6 +437,7 @@ class MainWindow(QMainWindow):
                 translated = self._count_translated(mod_data)
                 rate = translated / total if total > 0 else 0
                 load_index = self._mod_load_order.index(mod_path) if mod_path in self._mod_load_order else 9999
+                is_ftb = 0 if mod_data.get("type") == "ftbquest" else 1  # FTBクエストを優先 (0 = 上)
                 items_data.append({
                     "path": mod_path,
                     "name": mod_data["name"],
@@ -443,24 +445,25 @@ class MainWindow(QMainWindow):
                     "translated": translated,
                     "rate": rate,
                     "load_index": load_index,
+                    "is_ftb": is_ftb,
                     "hidden": item.isHidden()
                 })
         
-        # Sort based on type
+        # Sort based on type (FTBクエストは常に一番上)
         if sort_type == "load_order":
-            items_data.sort(key=lambda x: x["load_index"])
+            items_data.sort(key=lambda x: (x["is_ftb"], x["load_index"]))
         elif sort_type == "name_asc":
-            items_data.sort(key=lambda x: x["name"].lower())
+            items_data.sort(key=lambda x: (x["is_ftb"], x["name"].lower()))
         elif sort_type == "name_desc":
-            items_data.sort(key=lambda x: x["name"].lower(), reverse=True)
+            items_data.sort(key=lambda x: (x["is_ftb"], x["name"].lower()), reverse=True)
         elif sort_type == "items_desc":
-            items_data.sort(key=lambda x: x["total"], reverse=True)
+            items_data.sort(key=lambda x: (x["is_ftb"], -x["total"]))
         elif sort_type == "items_asc":
-            items_data.sort(key=lambda x: x["total"])
+            items_data.sort(key=lambda x: (x["is_ftb"], x["total"]))
         elif sort_type == "rate_desc":
-            items_data.sort(key=lambda x: x["rate"], reverse=True)
+            items_data.sort(key=lambda x: (x["is_ftb"], -x["rate"]))
         elif sort_type == "rate_asc":
-            items_data.sort(key=lambda x: x["rate"])
+            items_data.sort(key=lambda x: (x["is_ftb"], x["rate"]))
         
         # Remember current selection
         current_item = self.mod_list.currentItem()
@@ -982,96 +985,57 @@ class MainWindow(QMainWindow):
         return None
     
     def import_from_path(self, path):
-        """Import resource pack from path and apply to all loaded MODs"""
-        import zipfile
-        all_translations = {}
+        """Import resource pack from path and apply to all loaded MODs (Asynchronous)"""
+        if hasattr(self, 'rp_thread') and self.rp_thread and self.rp_thread.isRunning():
+            return
+
+        self.progress_bar.show()
+        self.progress_bar.setRange(0, 0) # Indeterminate initially
+        self.statusBar().showMessage("リソースパックを解析中...")
+        self.toolbar.setEnabled(False)
+        self.mod_list.setEnabled(False)
+        self.editor.setEnabled(False)
+
+        self.rp_thread = ResourcePackImportThread(path, self.loaded_mods, self.file_handler, self.memory)
+        self.rp_thread.progress.connect(self.on_rp_import_progress)
+        self.rp_thread.finished.connect(self.on_rp_import_finished)
+        self.rp_thread.error.connect(self.on_rp_import_error)
+        self.rp_thread.start()
+
+    def on_rp_import_progress(self, current, total):
+        if total > 0:
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(current)
+            self.statusBar().showMessage(f"リソースパックを読み込み中... ({current}/{total})")
+
+    def on_rp_import_finished(self, all_translations, applied_count, matched_mods):
+        self.progress_bar.hide()
+        self.toolbar.setEnabled(True)
+        self.mod_list.setEnabled(True)
+        self.editor.setEnabled(True)
+        self.statusBar().showMessage("リソースパックの適用が完了しました", 3000)
+
+        # Update current mod display if it was affected
+        if self.current_mod_path and self.current_mod_path in self.loaded_mods:
+            self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
         
-        try:
-            if os.path.isdir(path):
-                for root, dirs, files in os.walk(path):
-                    for f in files:
-                        if f.endswith('ja_jp.json') or f.endswith('ja_jp.lang'):
-                            full_path = os.path.join(root, f)
-                            rel_path = os.path.relpath(full_path, path)
-                            try:
-                                with open(full_path, 'r', encoding='utf-8') as lang_file:
-                                    content = lang_file.read()
-                                    if f.endswith('.json'):
-                                        translations = json.loads(content)
-                                    else:
-                                        translations = self.file_handler._parse_lang(content)
-                                    if translations:
-                                        all_translations[rel_path] = translations
-                            except:
-                                continue
-            else:
-                with zipfile.ZipFile(path, 'r') as zf:
-                    for f in zf.namelist():
-                        if f.endswith('ja_jp.json') or f.endswith('ja_jp.lang'):
-                            try:
-                                with zf.open(f) as zfile:
-                                    content = zfile.read().decode('utf-8')
-                                    if f.endswith('.json'):
-                                        translations = json.loads(content)
-                                    else:
-                                        translations = self.file_handler._parse_lang(content)
-                                    if translations:
-                                        all_translations[f] = translations
-                            except:
-                                continue
-            
-            if not all_translations:
-                return
-            
-            applied_count = 0
-            matched_mods = []
-            
-            for mod_path, mod_data in self.loaded_mods.items():
-                target_file = mod_data["target_file"]
-                ja_target = target_file.replace('en_us', 'ja_jp')
-                mod_type = mod_data.get("type", "mod")
-                
-                for pack_path, translations in all_translations.items():
-                    pack_path_normalized = pack_path.replace('\\', '/')
-                    ja_target_normalized = ja_target.replace('\\', '/')
-                    
-                    matched = False
-                    
-                    if pack_path_normalized.endswith(ja_target_normalized) or ja_target_normalized.endswith(pack_path_normalized):
-                        matched = True
-                    elif mod_type == "ftbquest" and "ftbquests" in pack_path_normalized:
-                        matched = True
-                    
-                    if matched:
-                        matching_keys = set(translations.keys()) & set(mod_data["original"].keys())
-                        if matching_keys:
-                            for key in matching_keys:
-                                mod_data["translations"][key] = translations[key]
-                            applied_count += len(matching_keys)
-                            matched_mods.append(mod_data["name"])
-                            self.memory.update({k: translations[k] for k in matching_keys})
-                            break
-                
-                if mod_type == "ftbquest" and mod_data["name"] not in matched_mods:
-                    for pack_path, translations in all_translations.items():
-                        matching_keys = set(translations.keys()) & set(mod_data["original"].keys())
-                        if matching_keys:
-                            for key in matching_keys:
-                                mod_data["translations"][key] = translations[key]
-                            applied_count += len(matching_keys)
-                            matched_mods.append(mod_data["name"])
-                            self.memory.update({k: translations[k] for k in matching_keys})
-                            break
-            
-            if self.current_mod_path and self.current_mod_path in self.loaded_mods:
-                self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
-            
-            self.refresh_all_mod_colors()
-            
-            if matched_mods:
-                QMessageBox.information(self, "リソースパック適用", f"{len(matched_mods)} MODに {applied_count} 項目を適用しました。")
-        except Exception as e:
-            QMessageBox.critical(self, "エラー", f"リソースパック読込に失敗: {e}")
+        self.refresh_all_mod_colors()
+
+        if matched_mods:
+            QMessageBox.information(self, "リソースパック適用", 
+                                    f"{len(matched_mods)} MODに {applied_count} 項目を適用しました。")
+        else:
+            QMessageBox.information(self, "情報", "適用可能な翻訳が見つかりませんでした。")
+        
+        self.rp_thread = None
+
+    def on_rp_import_error(self, message):
+        self.progress_bar.hide()
+        self.toolbar.setEnabled(True)
+        self.mod_list.setEnabled(True)
+        self.editor.setEnabled(True)
+        QMessageBox.critical(self, "エラー", f"リソースパック読込に失敗: {message}")
+        self.rp_thread = None
 
     def open_file_dialog(self):
         # Ask user what to open
@@ -1202,11 +1166,22 @@ class MainWindow(QMainWindow):
         self.translation_start_time = None
         self.translation_total_items = len(items)
         self.translation_original_items = items.copy()  # Store original items for term extraction
-        self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms, parallel_count)
+        
+        # Get current MOD name for context
+        mod_name = None
+        if self.current_mod_path and self.current_mod_path in self.loaded_mods:
+            mod_name = self.loaded_mods[self.current_mod_path].get("name")
+        
+        # Create translator thread with memory for progressive saving
+        self.translator_thread = TranslatorThread(
+            items, api_key, model, glossary_terms, parallel_count,
+            memory=self.memory, mod_name=mod_name
+        )
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self.on_translate_finished)
         self.translator_thread.stopped.connect(self.on_translate_stopped)  # Handle stop
         self.translator_thread.error.connect(self.on_translation_error)
+        self.translator_thread.partial_save.connect(self.on_partial_save)  # Progressive save
         self.translator_thread.start()
         
         # Show immediate feedback
@@ -1279,6 +1254,17 @@ class MainWindow(QMainWindow):
         self.translator_thread = None
         self.translation_original_items = None
         self.statusBar().showMessage("翻訳が中断されました", 3000)
+
+    def on_partial_save(self, partial_results):
+        """Handle progressive save during translation."""
+        # Update editor with latest translations
+        if partial_results and self.current_mod_path:
+            # Silently update without triggering full refresh
+            current_translations = self.editor.get_translations()
+            current_translations.update(partial_results)
+            # Just update the internal data, don't refresh UI during translation
+            self.loaded_mods[self.current_mod_path]["translations"] = current_translations
+
 
     def start_auto_translate_all(self):
         if not self.current_mod_path: return

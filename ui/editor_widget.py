@@ -161,8 +161,8 @@ class EditorWidget(QWidget):
             elif filter_state == 2:  # Same as original
                 match_filter = translation and translation == original
             elif filter_state == 3:  # Contains Roman letters (excluding color codes and placeholders)
-                # Remove Minecraft color codes (§ followed by a character)
-                text_without_codes = re.sub(r'§.', '', translation)
+                # Remove Minecraft color codes (§x and &x format)
+                text_without_codes = re.sub(r'[§&][0-9a-fk-or]', '', translation, flags=re.IGNORECASE)
                 # Remove format placeholders (%s, %d, %1$s, %2$d, etc.)
                 text_without_codes = re.sub(r'%(\d+\$)?[sdfc]', '', text_without_codes)
                 # Check if any Roman letters remain
