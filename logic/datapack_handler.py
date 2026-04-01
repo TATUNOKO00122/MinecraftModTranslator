@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import zipfile
 
 CATEGORY_KEY_MAP = {
@@ -110,6 +111,13 @@ INLINE_FIELDS = {
     "flavor_text": ".flavor",
 }
 
+INLINE_FIELD_TEMPLATE_INDEX = {
+    "loc_name": 0,
+    "loc_desc": -1,
+    "effect_tip": -1,
+    "flavor_text": -1,
+}
+
 SKIP_CATEGORIES = {
     "profession_recipe", "loot_tables", "recipes",
     "talent_tree", "game_balance",
@@ -146,6 +154,18 @@ def _find_mod_jar(mods_dir, namespace):
     return None
 
 
+def _parse_lang_json(content):
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        cleaned = re.sub(r',\s*}', '}', content)
+        cleaned = re.sub(r',\s*]', ']', cleaned)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            return {}
+
+
 def _read_lang_from_jar(jar_path, lang_file="en_us.json"):
     try:
         with zipfile.ZipFile(jar_path, 'r') as zf:
@@ -153,7 +173,7 @@ def _read_lang_from_jar(jar_path, lang_file="en_us.json"):
                 if entry.endswith(lang_file) and '/lang/' in entry:
                     with zf.open(entry) as f:
                         content = f.read().decode('utf-8')
-                        return json.loads(content)
+                        return _parse_lang_json(content)
     except (zipfile.BadZipFile, json.JSONDecodeError, OSError):
         pass
     return {}
@@ -183,6 +203,60 @@ def _strip_ns_prefix(category_dir, namespace):
     if category_dir.startswith(prefix):
         return category_dir[len(prefix):]
     return category_dir
+
+
+def _read_all_lang_from_jar(jar_path, lang_file="en_us.json"):
+    result = {}
+    try:
+        with zipfile.ZipFile(jar_path, 'r') as zf:
+            for entry in zf.namelist():
+                if entry.endswith(lang_file) and '/lang/' in entry:
+                    try:
+                        with zf.open(entry) as f:
+                            content = f.read().decode('utf-8')
+                            data = _parse_lang_json(content)
+                            if isinstance(data, dict):
+                                result.update(data)
+                    except (OSError, UnicodeDecodeError):
+                        pass
+    except (zipfile.BadZipFile, OSError):
+        pass
+    return result
+
+
+def _read_lang_from_openloader_resources(instance_dir):
+    resources_dir = os.path.join(instance_dir, "config", "openloader", "resources")
+    if not os.path.isdir(resources_dir):
+        return {}
+
+    merged = {}
+    for entry in os.listdir(resources_dir):
+        entry_path = os.path.join(resources_dir, entry)
+        if entry.endswith(('.zip', '.jar')):
+            lang_data = _read_all_lang_from_jar(entry_path)
+            if lang_data:
+                merged.update(lang_data)
+        elif os.path.isdir(entry_path):
+            for root, _, files in os.walk(entry_path):
+                for f in files:
+                    if f.endswith('.json') and 'lang' in root:
+                        try:
+                            with open(os.path.join(root, f), 'r', encoding='utf-8') as fh:
+                                data = _parse_lang_json(fh.read())
+                                if isinstance(data, dict):
+                                    merged.update(data)
+                        except OSError:
+                            pass
+    return merged
+
+
+def _infer_openloader_instance_dir(datapack_path):
+    candidate = datapack_path
+    for _ in range(5):
+        candidate = os.path.dirname(candidate)
+        if os.path.isdir(os.path.join(candidate, "config", "openloader")):
+            return candidate
+    return None
 
 
 def load_datapack(datapack_path, mods_dir=None):
@@ -218,6 +292,12 @@ def load_datapack(datapack_path, mods_dir=None):
             if lang_data:
                 mod_lang.update(lang_data)
 
+    instance_dir = _infer_openloader_instance_dir(datapack_path)
+    if instance_dir:
+        openloader_lang = _read_lang_from_openloader_resources(instance_dir)
+        if openloader_lang:
+            mod_lang.update(openloader_lang)
+
     category_items = {}
     inline_overrides = {}
 
@@ -240,6 +320,9 @@ def load_datapack(datapack_path, mods_dir=None):
         if key_templates is None:
             key_templates = [f"{ns}.{cat_key}.{{id}}"]
 
+        name_key = key_templates[0].format(ns=ns, id=item_id) if key_templates else None
+        name_value = None
+
         for template in key_templates:
             key = template.format(ns=ns, id=item_id)
             source = ";".join(sources)
@@ -247,19 +330,30 @@ def load_datapack(datapack_path, mods_dir=None):
             if key in mod_lang:
                 lang_dict[key] = mod_lang[key]
                 item_sources[key] = source
+                if key == name_key:
+                    name_value = mod_lang[key]
             elif key in inline_overrides:
                 lang_dict[key] = inline_overrides[key]
                 item_sources[key] = source
                 inline_used.add(key)
+                if key == name_key:
+                    name_value = inline_overrides[key]
             else:
                 fallback = _format_id_as_name(item_id)
+                if name_value and fallback == name_value and key != name_key:
+                    continue
                 lang_dict[key] = fallback
                 item_sources[key] = source
+                if key == name_key:
+                    name_value = fallback
 
         for field, suffix in INLINE_FIELDS.items():
-            override_key = f"{ns}.{cat_key}.{item_id}{suffix}"
+            override_key = _make_inline_key(ns, cat_key, item_id, field, suffix)
             if override_key in inline_overrides and override_key not in lang_dict:
-                lang_dict[override_key] = inline_overrides[override_key]
+                val = inline_overrides[override_key]
+                if name_value and val == name_value:
+                    continue
+                lang_dict[override_key] = val
                 item_sources[override_key] = ";".join(sources)
                 inline_used.add(override_key)
 
@@ -272,6 +366,22 @@ def load_datapack(datapack_path, mods_dir=None):
 
     pack_name = os.path.basename(datapack_path)
     return pack_name, primary_ns, lang_dict, item_sources
+
+
+def _make_inline_key(ns, cat_key, item_id, field, suffix):
+    templates = CATEGORY_KEY_MAP.get(cat_key)
+
+    if field == "loc_name" and templates:
+        return templates[0].format(ns=ns, id=item_id)
+
+    if suffix and templates:
+        base = templates[0].format(ns=ns, id=item_id)
+        return f"{base}{suffix}"
+
+    if templates:
+        return templates[0].format(ns=ns, id=item_id)
+
+    return f"{ns}.{cat_key}.{item_id}{suffix}"
 
 
 def _scan_namespace(ns_dir, namespace, category_items, inline_overrides):
@@ -315,7 +425,7 @@ def _scan_namespace(ns_dir, namespace, category_items, inline_overrides):
                 value = data.get(field)
                 if not value or not isinstance(value, str) or not value.strip():
                     continue
-                override_key = f"{namespace}.{cat_key}.{item_id}{suffix}"
+                override_key = _make_inline_key(namespace, cat_key, item_id, field, suffix)
                 inline_overrides[override_key] = value.strip()
 
 

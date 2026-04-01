@@ -2316,115 +2316,15 @@ class MainWindow(QMainWindow):
         btn_dir = msg_box.addButton("フォルダ", QMessageBox.ActionRole)
         msg_box.addButton("キャンセル", QMessageBox.RejectRole)
         msg_box.exec()
-        
-        all_translations = {}
-        
-        settings = self.settings_dialog.get_settings()
-        target_lang = settings.get("target_lang", "ja_jp")
-        
-        try:
-            if msg_box.clickedButton() == btn_zip:
-                file_path, _ = QFileDialog.getOpenFileName(self, "リソースパック (Zip) を選択", "", "Zip Files (*.zip)")
-                if not file_path: return
-                
-                import zipfile
-                with zipfile.ZipFile(file_path, 'r') as zf:
-                    for f in zf.namelist():
-                        if f.endswith(f'{target_lang}.json') or f.endswith(f'{target_lang}.lang'):
-                            try:
-                                with zf.open(f) as zfile:
-                                    content = zfile.read().decode('utf-8')
-                                    if f.endswith('.json'):
-                                        translations = json.loads(content)
-                                    else:
-                                        translations = self.file_handler._parse_lang(content)
-                                    if translations:
-                                        all_translations[f] = translations
-                            except (json.JSONDecodeError, Exception):
-                                continue
 
-            elif msg_box.clickedButton() == btn_dir:
-                dir_path = QFileDialog.getExistingDirectory(self, "リソースパック (フォルダ) を選択")
-                if not dir_path: return
-                
-                for root, dirs, files in os.walk(dir_path):
-                    for f in files:
-                        if f.endswith(f'{target_lang}.json') or f.endswith(f'{target_lang}.lang'):
-                            full_path = os.path.join(root, f)
-                            rel_path = os.path.relpath(full_path, dir_path)
-                            try:
-                                with open(full_path, 'r', encoding='utf-8') as lang_file:
-                                    content = lang_file.read()
-                                    if f.endswith('.json'):
-                                        translations = json.loads(content)
-                                    else:
-                                        translations = self.file_handler._parse_lang(content)
-                                    if translations:
-                                        all_translations[rel_path] = translations
-                            except (json.JSONDecodeError, Exception):
-                                continue
-            else:
-                return
-
-            if not all_translations:
-                QMessageBox.warning(self, "エラー", f"{target_lang} ファイルが見つかりませんでした。")
-                return
-
-            applied_count = 0
-            matched_mods = []
-            
-            for mod_path, mod_data in self.loaded_mods.items():
-                target_file = mod_data["target_file"]
-                lang_target = target_file.replace('en_us', target_lang)
-                mod_type = mod_data.get("type", "mod")
-                
-                for pack_path, translations in all_translations.items():
-                    pack_path_normalized = pack_path.replace('\\', '/')
-                    ja_target_normalized = lang_target.replace('\\', '/')
-                    
-                    matched = False
-                    
-                    # Standard path matching
-                    if pack_path_normalized.endswith(ja_target_normalized) or ja_target_normalized.endswith(pack_path_normalized):
-                        matched = True
-                    # FTB Quest special matching
-                    elif mod_type == "ftbquest" and "ftbquests" in pack_path_normalized:
-                        matched = True
-                    
-                    if matched:
-                        matching_keys = set(translations.keys()) & set(mod_data["original"].keys())
-                        if matching_keys:
-                            for key in matching_keys:
-                                mod_data["translations"][key] = translations[key]
-                            applied_count += len(matching_keys)
-                            matched_mods.append(mod_data["name"])
-                            self.memory.update({k: translations[k] for k in matching_keys})
-                            break
-                
-                # Fallback: For FTB quests, try key matching across all pack translations
-                if mod_type == "ftbquest" and mod_data["name"] not in matched_mods:
-                    for pack_path, translations in all_translations.items():
-                        matching_keys = set(translations.keys()) & set(mod_data["original"].keys())
-                        if matching_keys:
-                            for key in matching_keys:
-                                mod_data["translations"][key] = translations[key]
-                            applied_count += len(matching_keys)
-                            matched_mods.append(mod_data["name"])
-                            self.memory.update({k: translations[k] for k in matching_keys})
-                            break   
-            
-            if self.current_mod_path and self.current_mod_path in self.loaded_mods:
-                self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
-            
-            self.refresh_all_mod_colors()
-            
-            if matched_mods:
-                QMessageBox.information(self, "成功", f"{len(matched_mods)} MODに対して {applied_count} 項目をインポートしました。\n\n適用: {', '.join(matched_mods[:5])}{'...' if len(matched_mods) > 5 else ''}")
-            else:
-                QMessageBox.information(self, "情報", "読み込み済みMODに一致する翻訳は見つかりませんでした。")
-
-        except Exception as e:
-            QMessageBox.critical(self, "エラー", f"インポートに失敗しました:\n{e}")
+        if msg_box.clickedButton() == btn_zip:
+            file_path, _ = QFileDialog.getOpenFileName(self, "リソースパック (Zip) を選択", "", "Zip Files (*.zip)")
+            if file_path:
+                self.import_from_path(file_path)
+        elif msg_box.clickedButton() == btn_dir:
+            dir_path = QFileDialog.getExistingDirectory(self, "リソースパック (フォルダ) を選択")
+            if dir_path:
+                self.import_from_path(dir_path)
 
     def open_glossary(self):
         dialog = GlossaryDialog(self.glossary, self)
