@@ -2044,12 +2044,18 @@ class MainWindow(QMainWindow):
         
         if parent_dir:
             try:
-                save_path = os.path.join(parent_dir, default_folder_name)
-                
-                if os.path.exists(save_path):
-                    confirm = QMessageBox.question(self, "上書き確認", f"フォルダ '{default_folder_name}' は既に存在します。\n上書きしますか？")
-                    if confirm != QMessageBox.Yes:
-                        return
+                is_existing_pack = (os.path.exists(os.path.join(parent_dir, "pack.mcmeta")) or
+                                    os.path.exists(os.path.join(parent_dir, "assets")))
+
+                if is_existing_pack:
+                    save_path = parent_dir
+                else:
+                    save_path = os.path.join(parent_dir, default_folder_name)
+
+                    if os.path.exists(save_path):
+                        confirm = QMessageBox.question(self, "上書き確認", f"フォルダ '{default_folder_name}' は既に存在します。\n上書きしますか？")
+                        if confirm != QMessageBox.Yes:
+                            return
 
                 current_translations = self.editor.get_translations()
 

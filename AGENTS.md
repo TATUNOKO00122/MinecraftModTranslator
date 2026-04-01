@@ -108,10 +108,13 @@ ui/
 - Signals defined as class attributes: `progress = Signal(int, int)`
 - Block signals during programmatic changes: `self.mod_list.blockSignals(True)` / `blockSignals(False)`
 - `Qt.UserRole` for storing file path data in `QListWidgetItem`
+- Custom data roles: `REVIEW_DATA_ROLE = Qt.UserRole + 1` for extending roles beyond standard
 - Lazy widget imports inside methods: `from PySide6.QtWidgets import QPushButton`
 - Persistent settings: `QSettings("MinecraftModTranslator", "App")` in `settings_dialog.py`
 - Custom `QStyledItemDelegate` subclass for diff-mode rendering in editor
-- `QUndoCommand` subclass for undo/redo in editor cells
+- `QUndoCommand` subclass for undo/redo in editor cells, `_first_redo_done` flag pattern
+- Drag-and-drop: `setAcceptDrops(True)`, `dragEnterEvent`/`dropEvent` for file loading
+- `closeEvent` override for session save before app exit
 
 ### API Interaction (OpenRouter)
 - Endpoint: `https://openrouter.ai/api/v1/chat/completions`
@@ -130,6 +133,8 @@ ui/
 - SQLite batch operations: `executemany()` with batch_size=1000, dynamic `IN` clauses with batch_size=500
 - SQLite lazy singleton connection: `check_same_thread=False`, `row_factory = sqlite3.Row`
 - Progressive save during translation: save to memory every 5 batches via `partial_save` signal
+- Session persistence: `SESSION_FILE` class attribute, save on `closeEvent`, restore on startup with user confirmation
+- File existence checks: `os.path.exists()` before all file operations, validate paths before restoration
 
 ### String Handling
 - All file I/O: `encoding='utf-8'` explicit
