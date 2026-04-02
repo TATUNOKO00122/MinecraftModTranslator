@@ -137,6 +137,10 @@ class TranslationMemory:
         """
         return self._v2.find_changed_sources(current_data)
     
+    def find_similar(self, batch_texts: list, mod_name: str = None,
+                     limit: int = 5) -> list:
+        return self._v2.find_similar(batch_texts, mod_name=mod_name, limit=limit)
+    
     def get_stats(self) -> dict:
         """Get statistics about the translation memory."""
         return self._v2.get_stats()

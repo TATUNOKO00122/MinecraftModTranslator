@@ -589,6 +589,25 @@ class TranslatorThread(QThread):
                 glossary_text = "\n".join([f"- {k}: {v}" for k, v in relevant_terms.items()])
                 system_content += f"\n\nUse the following glossary for consistency:\n{glossary_text}"
 
+        if self.memory:
+            try:
+                batch_texts = list(unique_items.values())
+                similar = self.memory.find_similar(batch_texts, mod_name=self.mod_name, limit=5)
+                if similar:
+                    filtered = [(s, t) for s, t in similar if len(s) <= 120 and len(t) <= 120]
+                    if filtered:
+                        examples = "\n".join([f'  "{s}" → "{t}"' for s, t in filtered])
+                        system_content += (
+                            f"\n\n=== REFERENCE TRANSLATIONS (already translated in "
+                            f"{'this MOD' if self.mod_name else 'your translation memory'}) ===\n"
+                            f"Use these for consistent terminology:\n{examples}\n"
+                            f"Rules:\n"
+                            f"- If a proper noun appears above, you MUST use the same translation.\n"
+                            f"- If a term has no established translation, keep the original English as-is.\n"
+                        )
+            except Exception as e:
+                print(f"TM few-shot lookup skipped: {e}")
+
         data = {
             "model": self.model,
             "messages": [

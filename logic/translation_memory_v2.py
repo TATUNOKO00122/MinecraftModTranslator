@@ -11,6 +11,8 @@ Features:
 import sqlite3
 import json
 import os
+import re
+import threading
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
 
@@ -22,6 +24,7 @@ class TranslationMemoryV2:
         self.db_path = db_path
         self.legacy_json_path = db_path.replace('.db', '.json')
         self._conn = None
+        self._lock = threading.Lock()
         self._init_db()
         self._migrate_from_json_if_needed()
     
@@ -58,6 +61,7 @@ class TranslationMemoryV2:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_source ON translations(source)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_source_hash ON translations(source_hash)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_reviewed ON translations(reviewed)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_mod_name ON translations(mod_name)')
         
         conn.commit()
     
@@ -272,6 +276,118 @@ class TranslationMemoryV2:
         
         return changed
     
+    _STOP_WORDS = frozenset({
+        'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'was',
+        'one', 'our', 'had', 'his', 'how', 'its', 'let', 'may', 'new', 'now',
+        'old', 'see', 'way', 'who', 'did', 'get', 'him', 'she', 'use', 'out',
+        'any', 'from', 'them', 'some', 'than', 'been', 'have', 'will', 'into',
+        'this', 'that', 'with', 'they', 'what', 'about', 'which', 'when', 'make',
+        'like', 'just', 'over', 'such', 'take', 'each', 'very', 'your', 'also',
+    })
+
+    _SUFFIXES_SORTED = (
+        'ication', 'ization', 'ational', 'iness',
+        'ation', 'ition', 'ment', 'ness', 'ence', 'ance',
+        'able', 'ible', 'ings',
+        'ing', 'ful', 'ous', 'ive',
+        'ion', 'ity', 'ism', 'ist',
+        'ed', 'er', 'ly',
+    )
+
+    @staticmethod
+    def _stem(word: str) -> str:
+        w = word
+        if w.endswith('ies') and len(w) > 4:
+            w = w[:-3] + 'y'
+        elif w.endswith(('sses', 'shes', 'ches', 'xes', 'zes')) and len(w) > 4:
+            w = w[:-2]
+        elif w.endswith('s') and not w.endswith('ss') and len(w) > 3:
+            w = w[:-1]
+        for suffix in TranslationMemoryV2._SUFFIXES_SORTED:
+            if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+                return w[:-len(suffix)]
+        return w
+
+    def find_similar(self, batch_texts: List[str], mod_name: str = None,
+                     limit: int = 5) -> List[Tuple[str, str]]:
+        """
+        バッチ内テキストと共通単語が多いTM訳例を検索する。
+        
+        Args:
+            batch_texts: 現在のバッチの原文テキスト群
+            mod_name: 同じMOD名でフィルタ（None=全MOD対象）
+            limit: 返す訳例の最大数
+        Returns:
+            [(source, translation), ...] 共通単語数順
+        """
+        if not batch_texts:
+            return []
+
+        batch_words = set()
+        for text in batch_texts:
+            if not text or not isinstance(text, str):
+                continue
+            batch_words.update(w for w in re.findall(r'[a-zA-Z]{3,}', text.lower()))
+        batch_words -= self._STOP_WORDS
+
+        if not batch_words:
+            return []
+
+        batch_stems = {self._stem(w) for w in batch_words}
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        search_words = list(batch_words | batch_stems)
+        top_words = sorted(search_words, key=len, reverse=True)[:20]
+        like_clauses = ' OR '.join(['source LIKE ?' for _ in top_words])
+        like_params = [f'%{w}%' for w in top_words]
+
+        if mod_name:
+            query = (
+                f'SELECT source, translation FROM translations '
+                f'WHERE mod_name = ? AND source != "" AND ({like_clauses})'
+            )
+            params = [mod_name] + like_params
+        else:
+            query = (
+                f'SELECT source, translation FROM translations '
+                f'WHERE source != "" AND ({like_clauses})'
+            )
+            params = like_params
+
+        with self._lock:
+            cursor.execute(query, params)
+            candidates = cursor.fetchall()
+
+        if not candidates:
+            return []
+
+        scored = []
+        for row in candidates:
+            source = row['source'] or ''
+            source_words = set(re.findall(r'[a-zA-Z]{3,}', source.lower())) - self._STOP_WORDS
+            source_stems = {self._stem(w) for w in source_words}
+            common_count = len(batch_stems & source_stems)
+            if common_count >= 1:
+                scored.append((common_count, source, row['translation']))
+
+        if not scored:
+            return []
+
+        scored.sort(key=lambda x: -x[0])
+
+        seen = set()
+        results = []
+        for _, source, translation in scored:
+            if source not in seen:
+                seen.add(source)
+                results.append((source, translation))
+                if len(results) >= limit:
+                    break
+
+        return results
+
     def get_stats(self) -> dict:
         """Get statistics about the translation memory."""
         conn = self._get_connection()
@@ -360,6 +476,10 @@ class TranslationMemoryCompat:
     def apply_to(self, target_data: Dict[str, str]) -> Dict[str, str]:
         """Returns a dict of translations for the given target_data {key: original} found in memory."""
         return self.v2.apply_to(target_data)
+    
+    def find_similar(self, batch_texts: List[str], mod_name: str = None,
+                     limit: int = 5) -> List[Tuple[str, str]]:
+        return self.v2.find_similar(batch_texts, mod_name=mod_name, limit=limit)
     
     def save(self):
         self.v2.save()
