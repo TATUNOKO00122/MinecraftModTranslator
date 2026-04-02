@@ -1,11 +1,14 @@
 import os
 import sys
 import json
+import re
 import stat
+import zipfile
+import ctypes
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolBar, 
                                QFileDialog, QMessageBox, QLabel, QProgressBar, QMenu, QSplitter, QListWidget, QApplication,
-                               QDialog, QDialogButtonBox)
-from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut
+                               QDialog, QDialogButtonBox, QListWidgetItem, QToolButton, QComboBox, QPushButton, QCheckBox)
+from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut, QIcon, QColor
 from PySide6.QtCore import Qt, QTimer
 
 from logic.file_handler import FileHandler
@@ -43,7 +46,6 @@ class MainWindow(QMainWindow):
     def _restrict_file_permissions(path):
         if sys.platform == 'win32':
             try:
-                import ctypes
                 kernel32 = ctypes.windll.kernel32
                 handle = kernel32.CreateFileW(path, 0x00010000, 0, None, 3, 0x80, None)
                 if handle != -1:
@@ -68,8 +70,6 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
         self.setAcceptDrops(True)
         
-        # Set window icon
-        from PySide6.QtGui import QIcon
         icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icon.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
@@ -136,8 +136,6 @@ class MainWindow(QMainWindow):
         export_action.triggered.connect(self.export_resource_pack)
         self.toolbar.addAction(export_action)
 
-        # SNBT Apply Button (using QToolButton for styling)
-        from PySide6.QtWidgets import QToolButton
         self.apply_snbt_btn = QToolButton()
         self.apply_snbt_btn.setText("SNBT適用")
         self.apply_snbt_btn.clicked.connect(self.apply_ftbquest_snbt)
@@ -154,8 +152,6 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_widget)
         # Filter dropdown (no label needed)
         
-        # Filter dropdown
-        from PySide6.QtWidgets import QComboBox
         self.mod_filter = QComboBox()
         self.mod_filter.addItem("すべて", "all")
         self.mod_filter.addItem("未翻訳", "incomplete")
@@ -184,7 +180,6 @@ class MainWindow(QMainWindow):
         self._mod_load_order = []
         
         # Batch translate button
-        from PySide6.QtWidgets import QPushButton
         self.batch_translate_btn = QPushButton("一括翻訳")
         self.batch_translate_btn.setToolTip("フィルター後の表示MODを順番に翻訳します")
         self.batch_translate_btn.clicked.connect(self.start_batch_translate_all_mods)
@@ -231,7 +226,6 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 4) # Make editor wider
 
         # Progress Bar and Stop Button
-        from PySide6.QtWidgets import QPushButton
         progress_layout = QHBoxLayout()
         progress_layout.setContentsMargins(4, 4, 4, 4)
         
@@ -477,13 +471,10 @@ class MainWindow(QMainWindow):
             self.mod_label.show()
         
         # Restore scroll position after Qt finishes its internal scroll adjustments
-        from PySide6.QtCore import QTimer
         QTimer.singleShot(0, lambda: scrollbar.setValue(scroll_pos))
 
     def update_current_mod_stats(self, translated, total):
         if not self.current_mod_path: return
-        
-        from PySide6.QtGui import QColor
         
         self.loaded_mods[self.current_mod_path]["_translated"] = translated
         self.loaded_mods[self.current_mod_path]["_total"] = total
@@ -507,8 +498,6 @@ class MainWindow(QMainWindow):
         return len([t for t in translations.values() if t])
     
     def refresh_all_mod_colors(self):
-        from PySide6.QtGui import QColor
-        
         for i in range(self.mod_list.count()):
             item = self.mod_list.item(i)
             mod_path = item.data(Qt.UserRole)
@@ -555,8 +544,8 @@ class MainWindow(QMainWindow):
                 continue
                 
             mod_data = self.loaded_mods[mod_path]
-            total = len(mod_data["original"])
-            translated = self._count_translated(mod_data)
+            total = mod_data.get("_total", len(mod_data["original"]))
+            translated = mod_data.get("_translated", self._count_translated(mod_data))
             is_complete = (total > 0 and translated == total)
             
             if filter_type == "all":
@@ -571,8 +560,6 @@ class MainWindow(QMainWindow):
                                for k, t in mod_data["translations"].items())
                 item.setHidden(not has_same)
             elif filter_type == "has_roman":
-                # Check if any translation contains Roman letters (excluding color codes and placeholders)
-                import re
                 has_roman = False
                 for t in mod_data["translations"].values():
                     if t:
@@ -594,20 +581,19 @@ class MainWindow(QMainWindow):
                 item.setHidden(is_ftb)
 
     def sort_mod_list(self):
-        """Sort MOD list based on selected sort option"""
         sort_type = self.mod_sort.currentData()
         
-        # Collect all items with their data
         items_data = []
+        load_order_map = {p: i for i, p in enumerate(self._mod_load_order)}
         for i in range(self.mod_list.count()):
             item = self.mod_list.item(i)
             mod_path = item.data(Qt.UserRole)
             if mod_path in self.loaded_mods:
                 mod_data = self.loaded_mods[mod_path]
-                total = len(mod_data["original"])
-                translated = self._count_translated(mod_data)
+                total = mod_data.get("_total", len(mod_data["original"]))
+                translated = mod_data.get("_translated", self._count_translated(mod_data))
                 rate = translated / total if total > 0 else 0
-                load_index = self._mod_load_order.index(mod_path) if mod_path in self._mod_load_order else 9999
+                load_index = load_order_map.get(mod_path, 9999)
                 is_ftb = 0 if mod_data.get("type") in ("ftbquest", "datapack") else 1
                 items_data.append({
                     "path": mod_path,
@@ -644,9 +630,6 @@ class MainWindow(QMainWindow):
         self.mod_list.blockSignals(True)
         self.mod_list.clear()
         
-        from PySide6.QtWidgets import QListWidgetItem
-        from PySide6.QtGui import QColor
-        
         new_current_item = None
         for data in items_data:
             mod_path = data["path"]
@@ -675,17 +658,14 @@ class MainWindow(QMainWindow):
             self.mod_list.setCurrentItem(new_current_item)
 
     def search_all_mods(self, search_text):
-        """全MODを横断検索し、検索語がヒットしたMODのみをMOD一覧に表示"""
         search_text = search_text.lower().strip()
         
-        # 検索語が空の場合はすべて表示
         if not search_text:
             for i in range(self.mod_list.count()):
                 self.mod_list.item(i).setHidden(False)
             self.statusBar().showMessage("検索をクリアしました", 3000)
             return
         
-        # 現在のMODの翻訳を保存
         if self.current_mod_path:
             self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
         
@@ -703,20 +683,17 @@ class MainWindow(QMainWindow):
             mod_data = self.loaded_mods[mod_path]
             found = False
             
-            # MOD名で検索
             if search_text in mod_data["name"].lower():
                 found = True
             
-            # 原文で検索
             if not found:
                 for key, original in mod_data["original"].items():
-                    if search_text in key.lower() or search_text in original.lower():
+                    if search_text in key or search_text in original.lower():
                         found = True
                         break
             
-            # 翻訳文で検索
             if not found:
-                for key, translation in mod_data["translations"].items():
+                for translation in mod_data["translations"].values():
                     if translation and search_text in translation.lower():
                         found = True
                         break
@@ -728,9 +705,6 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"「{search_text}」: {matched_count}/{total_count} MODがマッチ", 5000)
 
     def _check_snbt_applied(self, quests_folder):
-        """Check if SNBT has already been applied by looking for backup files."""
-        import os
-        # Look for backup files in the quests folder (both .snbt.bak and .backup_xxx formats)
         for root, dirs, files in os.walk(quests_folder):
             for f in files:
                 if '.backup' in f or f.endswith('.snbt.bak'):
@@ -1117,9 +1091,6 @@ class MainWindow(QMainWindow):
             if memory_translations:
                 self.loaded_mods[quests_folder]["translations"].update(memory_translations)
             
-            from PySide6.QtWidgets import QListWidgetItem
-            from PySide6.QtGui import QColor
-            
             total = len(lang_dict)
             translated = self._count_translated(self.loaded_mods[quests_folder])
             
@@ -1181,9 +1152,6 @@ class MainWindow(QMainWindow):
             if memory_translations:
                 self.loaded_mods[datapack_path]["translations"].update(memory_translations)
 
-            from PySide6.QtWidgets import QListWidgetItem
-            from PySide6.QtGui import QColor
-
             total = len(lang_dict)
             translated = self._count_translated(self.loaded_mods[datapack_path])
 
@@ -1208,8 +1176,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "エラー", f"データパックの読み込みに失敗しました:\n{e}")
         
     def detect_source_type(self, path):
-        """Detect if path is a MOD (has en_us) or resource pack (has target lang file)"""
-        import zipfile
         settings = self.settings_dialog.get_settings()
         target_lang = settings.get("target_lang", "ja_jp")
         
@@ -1343,11 +1309,6 @@ class MainWindow(QMainWindow):
                 self.loaded_mods[path]["translations"].update(memory_translations)
                 print(f"Applied {len(memory_translations)} translations from memory to {mod_name}")
 
-            # Add to list
-            from PySide6.QtWidgets import QListWidgetItem
-            from PySide6.QtGui import QColor
-            
-            # Initial stats
             total = len(data)
             translated = self._count_translated(self.loaded_mods[path])
             
@@ -1584,7 +1545,6 @@ class MainWindow(QMainWindow):
             return
         
         # Get current filter type to apply row-level filtering
-        import re
         filter_type = self.mod_filter.currentData()
         
         # Collect items from visible MODs based on filter condition
@@ -1827,8 +1787,7 @@ class MainWindow(QMainWindow):
         if not freq_model:
             freq_model = "deepseek/deepseek-chat"
 
-        from PySide6.QtWidgets import QDialogButtonBox, QComboBox
-        from PySide6.QtWidgets import QCheckBox as Toggle
+        Toggle = QCheckBox
 
         dlg = QDialog(self)
         dlg.setWindowTitle("頻出語抽出")

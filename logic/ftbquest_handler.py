@@ -39,7 +39,6 @@ TRANSLATABLE_FIELDS = ("title", "subtitle", "description")
 
 
 def detect_ftbquests(minecraft_path):
-    """Detect FTB Quests folder in a Minecraft directory"""
     if not FTB_SNBT_AVAILABLE:
         print("FTB Quest detection skipped: ftb_snbt_lib not available")
         return None
@@ -56,14 +55,12 @@ def detect_ftbquests(minecraft_path):
 
 
 def escape_text(text):
-    """Escape special characters for lang file"""
     for match, seq in ((r'%', r'%%'), (r'"', r'\"')):
         text = text.replace(match, seq)
     return text
 
 
 def filter_text(text):
-    """Filter out texts that should not be translated"""
     if not text:
         return False
     if text.startswith("{") and text.endswith("}"):
@@ -74,7 +71,6 @@ def filter_text(text):
 
 
 def parse_snbt_file(filepath):
-    """Parse a single SNBT file and return the data"""
     if not FTB_SNBT_AVAILABLE:
         print("Cannot parse SNBT: ftb_snbt_lib not available")
         return None
@@ -88,7 +84,6 @@ def parse_snbt_file(filepath):
 
 
 def _get_id(data):
-    """Extract id field from a compound tag, returns uppercase hex string or None"""
     if not isinstance(data, tag.Compound):
         return None
     try:
@@ -100,28 +95,30 @@ def _get_id(data):
     return None
 
 
-def _extract_translatable_string(field_name, value, key_prefix, lang_dict):
-    """Extract a single translatable string value into lang_dict."""
+def _is_converted_text(text):
+    return text.startswith("{") and text.endswith("}")
+
+
+def _extract_translatable_string(field_name, value, key_prefix, lang_dict, converted_keys=None):
     if isinstance(value, tag.String):
         text = str(value)
         if filter_text(text):
             lang_dict[f"{key_prefix}.{field_name}"] = escape_text(text)
+        elif converted_keys is not None and _is_converted_text(text):
+            converted_keys.add(f"{key_prefix}.{field_name}")
     elif isinstance(value, tag.List):
         try:
             for idx, item in enumerate(value):
                 text = str(item)
                 if filter_text(text):
                     lang_dict[f"{key_prefix}.{field_name}{idx}"] = escape_text(text)
+                elif converted_keys is not None and _is_converted_text(text):
+                    converted_keys.add(f"{key_prefix}.{field_name}{idx}")
         except:
             pass
 
 
-def extract_chapter_texts(chapter_data, lang_dict):
-    """
-    Extract translatable texts from a chapter SNBT compound.
-    Uses chapter ID from the data for stable keys.
-    Also recurses into quests, tasks, rewards.
-    """
+def extract_chapter_texts(chapter_data, lang_dict, converted_keys=None):
     if not isinstance(chapter_data, tag.Compound):
         return
 
@@ -130,17 +127,16 @@ def extract_chapter_texts(chapter_data, lang_dict):
         for field in ("title", "subtitle"):
             value = chapter_data.get(field)
             if value is not None:
-                _extract_translatable_string(field, value, f"chapter.{chapter_id}", lang_dict)
+                _extract_translatable_string(field, value, f"chapter.{chapter_id}", lang_dict, converted_keys)
 
     quests_list = chapter_data.get("quests")
     if isinstance(quests_list, tag.List):
         for quest_item in quests_list:
             if isinstance(quest_item, tag.Compound):
-                _extract_quest_texts(quest_item, lang_dict)
+                _extract_quest_texts(quest_item, lang_dict, converted_keys)
 
 
-def _extract_quest_texts(quest_data, lang_dict):
-    """Extract texts from a quest compound using its ID."""
+def _extract_quest_texts(quest_data, lang_dict, converted_keys=None):
     quest_id = _get_id(quest_data)
     if not quest_id:
         return
@@ -148,7 +144,7 @@ def _extract_quest_texts(quest_data, lang_dict):
     for field in ("title", "subtitle", "description"):
         value = quest_data.get(field)
         if value is not None:
-            _extract_translatable_string(field, value, f"quest.{quest_id}", lang_dict)
+            _extract_translatable_string(field, value, f"quest.{quest_id}", lang_dict, converted_keys)
 
     for list_field in ("tasks", "rewards"):
         items = quest_data.get(list_field)
@@ -161,15 +157,21 @@ def _extract_quest_texts(quest_data, lang_dict):
                         for field in ("title",):
                             value = item.get(field)
                             if value is not None:
-                                _extract_translatable_string(field, value, f"{obj_type}.{item_id}", lang_dict)
+                                _extract_translatable_string(field, value, f"{obj_type}.{item_id}", lang_dict, converted_keys)
+
+
+def _extract_from_snbt(quest_data, lang_dict, converted_keys=None):
+    if "quests" in quest_data and isinstance(quest_data.get("quests"), tag.List):
+        extract_chapter_texts(quest_data, lang_dict, converted_keys)
+    elif _get_id(quest_data):
+        obj_id = _get_id(quest_data)
+        for field in ("title", "subtitle"):
+            value = quest_data.get(field)
+            if value is not None:
+                _extract_translatable_string(field, value, f"chapter.{obj_id}", lang_dict, converted_keys)
 
 
 def _convert_quest_data(quest_data, translations):
-    """
-    Recursively convert quest data by replacing translatable texts with keys.
-    Uses ID-based keys. Updates quest_data in place.
-    Returns count of conversions.
-    """
     if not isinstance(quest_data, tag.Compound):
         return 0
 
@@ -220,10 +222,6 @@ def _convert_quest_data(quest_data, translations):
 
 
 def _convert_chapter_data(chapter_data, translations):
-    """
-    Convert chapter-level fields and recurse into quests.
-    Returns conversion count.
-    """
     if not isinstance(chapter_data, tag.Compound):
         return 0
 
@@ -252,7 +250,6 @@ def _convert_chapter_data(chapter_data, translations):
 
 
 def find_backup_file(snbt_path):
-    """Find the most recent backup file for an SNBT file"""
     import glob
     backup_pattern = snbt_path + ".backup_*"
     backups = glob.glob(backup_pattern)
@@ -263,12 +260,6 @@ def find_backup_file(snbt_path):
 
 
 def load_all_quests(quests_folder, modpack_name="modpack"):
-    """
-    Load all SNBT files from a quests folder and extract translatable texts.
-    Uses FTB Quests official key format: {objectType}.{hexID}.{field}
-    If SNBT is already converted (contains {key}), try to read from backup file.
-    Returns dict of {key: original_text}
-    """
     lang_dict = {}
 
     if not os.path.isdir(quests_folder):
@@ -281,7 +272,7 @@ def load_all_quests(quests_folder, modpack_name="modpack"):
         for filename in files:
             if not filename.endswith('.snbt'):
                 continue
-            if filename.endswith('.snbt.backup_*') or '.backup_' in filename:
+            if '.backup_' in filename:
                 continue
 
             snbt_count += 1
@@ -292,29 +283,20 @@ def load_all_quests(quests_folder, modpack_name="modpack"):
                 continue
 
             before_count = len(lang_dict)
+            converted_keys = set()
 
-            if "quests" in quest_data and isinstance(quest_data.get("quests"), tag.List):
-                extract_chapter_texts(quest_data, lang_dict)
-            elif _get_id(quest_data):
-                for field in ("title", "subtitle"):
-                    value = quest_data.get(field)
-                    if value is not None:
-                        obj_id = _get_id(quest_data)
-                        _extract_translatable_string(field, value, f"chapter.{obj_id}", lang_dict)
+            _extract_from_snbt(quest_data, lang_dict, converted_keys)
 
-            if len(lang_dict) == before_count:
+            need_backup = (converted_keys or len(lang_dict) == before_count)
+            if need_backup:
+                for k in converted_keys:
+                    lang_dict.pop(k, None)
+
                 backup_path = find_backup_file(filepath)
                 if backup_path:
                     backup_data = parse_snbt_file(backup_path)
                     if backup_data:
-                        if "quests" in backup_data and isinstance(backup_data.get("quests"), tag.List):
-                            extract_chapter_texts(backup_data, lang_dict)
-                        elif _get_id(backup_data):
-                            for field in ("title", "subtitle"):
-                                value = backup_data.get(field)
-                                if value is not None:
-                                    obj_id = _get_id(backup_data)
-                                    _extract_translatable_string(field, value, f"chapter.{obj_id}", lang_dict)
+                        _extract_from_snbt(backup_data, lang_dict)
                         backup_used += 1
 
     msg = f"FTB Quest: Parsed {snbt_count} SNBT files, extracted {len(lang_dict)} texts"
@@ -325,7 +307,6 @@ def load_all_quests(quests_folder, modpack_name="modpack"):
 
 
 def get_quest_file_count(quests_folder):
-    """Count the number of SNBT files in a folder"""
     count = 0
     if not os.path.isdir(quests_folder):
         return count
@@ -338,11 +319,6 @@ def get_quest_file_count(quests_folder):
 
 
 def export_ftbquest(quests_folder, output_folder, modpack_name, translations, target_lang="ja_jp"):
-    """
-    Export FTB Quest language file to resource pack format.
-    Outputs {target_lang}.json to assets/ftbquests/lang/ (no SNBT conversion)
-    Returns lang_count
-    """
     import json
 
     lang_dict = {}
@@ -364,11 +340,6 @@ def export_ftbquest(quests_folder, output_folder, modpack_name, translations, ta
 
 
 def apply_snbt_with_backup(quests_folder, modpack_name, translations):
-    """
-    Apply translations by converting SNBT files in place with backup.
-    Uses ID-based keys (FTB Quests official format).
-    Returns tuple of (converted_count, backup_count)
-    """
     import shutil
     from datetime import datetime
 
@@ -406,13 +377,6 @@ def apply_snbt_with_backup(quests_folder, modpack_name, translations):
 
 
 def migrate_old_keys(old_translations, quests_folder):
-    """
-    Migrate old format keys (modpack.filename.field) to new ID-based keys.
-    Attempts to match old keys to new keys by loading SNBT files and
-    correlating by field content.
-
-    Returns dict with new keys mapped to existing translations.
-    """
     if not old_translations:
         return {}
 

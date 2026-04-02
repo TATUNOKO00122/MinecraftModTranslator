@@ -119,6 +119,7 @@ class EditorWidget(QWidget):
         # Data
         self.original_data = {}
         self.translations = {}
+        self._key_to_row = {}
         
     def load_data(self, data):
         self.original_data = data
@@ -126,6 +127,7 @@ class EditorWidget(QWidget):
         self.review_status = {}
         self.undo_stack.clear()
         self._previous_cell_texts.clear()
+        self._key_to_row.clear()
         self.populate_table()
         self._emit_stats()
 
@@ -167,7 +169,9 @@ class EditorWidget(QWidget):
         self.table.setRowCount(0)
         self.table.setRowCount(len(self.original_data))
         
+        self._key_to_row.clear()
         for i, (key, value) in enumerate(self.original_data.items()):
+            self._key_to_row[key] = i
             key_item = QTableWidgetItem(key)
             key_item.setFlags(key_item.flags() ^ Qt.ItemIsEditable)
             self.table.setItem(i, 0, key_item)
@@ -258,10 +262,12 @@ class EditorWidget(QWidget):
     def get_translations(self):
         result = {}
         for i in range(self.table.rowCount()):
-            key = self.table.item(i, 0).text()
+            key_item = self.table.item(i, 0)
+            if not key_item:
+                continue
             translation = self.table.item(i, 2).text().strip()
             if translation:
-                result[key] = translation
+                result[key_item.text()] = translation
         return result
 
     def update_translations(self, additional_translations, validation_results=None):
@@ -272,16 +278,15 @@ class EditorWidget(QWidget):
         if validation_results:
             self.review_status.update(validation_results)
         
-        for i in range(self.table.rowCount()):
-            key = self.table.item(i, 0).text()
-            if key in additional_translations:
-                text = additional_translations[key]
-                item = self.table.item(i, 2)
+        for key, text in additional_translations.items():
+            row = self._key_to_row.get(key)
+            if row is not None:
+                item = self.table.item(row, 2)
                 item.setText(text)
-                original = self.table.item(i, 1).text()
+                original = self.table.item(row, 1).text()
                 item.setToolTip(f"原文: {original}")
-                self._previous_cell_texts[(i, 2)] = text
-                self._update_row_color(i, text, original)
+                self._previous_cell_texts[(row, 2)] = text
+                self._update_row_color(row, text, original)
         
         self.table.setUpdatesEnabled(True)
         self._programmatic_update = False
@@ -349,10 +354,9 @@ class EditorWidget(QWidget):
         for key in keys:
             if key in self.review_status:
                 self.review_status[key]["reviewed"] = True
-            for i in range(self.table.rowCount()):
-                if self.table.item(i, 0).text() == key:
-                    original = self.table.item(i, 1).text()
-                    translation = self.table.item(i, 2).text()
-                    self._update_row_color(i, translation, original)
-                    break
+            row = self._key_to_row.get(key)
+            if row is not None:
+                original = self.table.item(row, 1).text()
+                translation = self.table.item(row, 2).text()
+                self._update_row_color(row, translation, original)
         self.table.setUpdatesEnabled(True)

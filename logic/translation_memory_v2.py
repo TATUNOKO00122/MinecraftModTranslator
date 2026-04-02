@@ -153,6 +153,7 @@ class TranslationMemoryV2:
         cursor = conn.cursor()
         now = datetime.now().isoformat()
         
+        batch_rows = []
         for key, translation in translations.items():
             if not translation:
                 continue
@@ -160,8 +161,10 @@ class TranslationMemoryV2:
             source = sources.get(key, '') if sources else ''
             category = self._detect_category(key)
             source_hash = self._hash_text(source)
-            
-            cursor.execute('''
+            batch_rows.append((key, source, translation, mod_name, category, model, now, source_hash))
+        
+        if batch_rows:
+            cursor.executemany('''
                 INSERT INTO translations (key, source, translation, mod_name, category, model, translated_at, source_hash)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET
@@ -172,7 +175,7 @@ class TranslationMemoryV2:
                     translated_at = excluded.translated_at,
                     source = CASE WHEN excluded.source != '' THEN excluded.source ELSE translations.source END,
                     source_hash = CASE WHEN excluded.source_hash != '' THEN excluded.source_hash ELSE translations.source_hash END
-            ''', (key, source, translation, mod_name, category, model, now, source_hash))
+            ''', batch_rows)
         
         conn.commit()
     

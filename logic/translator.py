@@ -325,7 +325,7 @@ class TranslatorThread(QThread):
                     translated_batch, batch_validation = self.translate_batch_with_retry(batch_items)
                     results.update(translated_batch)
                     validation_results.update(batch_validation)
-                    self._partial_results = results.copy()
+                    self._partial_results = results
                     
                     self._batches_since_save += 1
                     if self._batches_since_save >= self.save_interval:
@@ -385,7 +385,7 @@ class TranslatorThread(QThread):
                         if translated_batch:
                             results.update(translated_batch)
                             validation_results.update(batch_validation)
-                            self._partial_results = results.copy()
+                            self._partial_results = results
                         
                         if rate_limited and current_parallel > 1:
                             current_parallel = max(1, current_parallel - 1)
