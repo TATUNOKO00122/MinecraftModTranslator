@@ -261,8 +261,95 @@ class TranslatorThread(QThread):
             "X-Title": "Minecraft MOD Translator Desktop"
         }
 
+    def _build_system_prompt(self, lang_english):
+        base = (
+            f"You are a professional translator for Minecraft mods and RPG games.\n"
+            f"Your task is to translate English text into natural {lang_english}.\n"
+            f"You will receive a JSON object. The keys are identifiers (DO NOT CHANGE KEYS). The values are the English text to translate.\n\n"
+            f"=== FORMAT RULES ===\n"
+            f"1. Translate the value of each key from English to {lang_english}.\n"
+            f"2. CRITICAL: Keep ALL placeholders like __VAR_0__, __VAR_1__ EXACTLY as they are. DO NOT modify, translate, or remove them.\n"
+            f"3. CRITICAL: When multiple __VAR_N__ placeholders appear near each other, "
+            f"you MUST keep their original left-to-right order. Do not swap or reorder adjacent placeholders.\n"
+            f"4. Output ONLY the valid JSON object. No markdown formatting.\n\n"
+            f"=== SYNTAX RULES ===\n"
+            f"5. Restructure English relative clauses into {lang_english} pre-modifiers:\n"
+            f'   "A sword which deals fire damage" → "火ダメージを与える剣"\n'
+            f'   "The player who defeated the dragon" → "ドラゴンを倒したプレイヤー"\n'
+            f"   NEVER leave English-style post-modifiers as-is.\n"
+            f"6. NEVER translate word-by-word. Read the full sentence first, understand its meaning in context, then produce a natural {lang_english} sentence with correct grammar and word order.\n\n"
+            f"=== STYLE RULES ===\n"
+            f"7. Use 常体 (だ・である調), NOT 敬体 (です・ます調). This matches the official Minecraft {lang_english} translation style.\n"
+            f'   Example: "Increases attack power" → "攻撃力が上がる", NOT "攻撃力が上がります"\n\n'
+            f"=== CONTEXT & VOCABULARY RULES ===\n"
+            f"8. All text is from Minecraft mods, RPG games, or fantasy settings. Translate with this context in mind.\n"
+            f"9. Choose words that fit the game/fantasy context, not literal dictionary meanings:\n"
+            f"   - 'Spiritual' in combat/magic context → mystic/divine/holy, NOT 'mental/psychological'\n"
+            f"   - 'Throw' in attack/skill context → hurl/launch/cast, NOT 'toss away'\n"
+            f"   - 'Spirit' in fantasy context → soul/phantom/aura, NOT 'enthusiasm'\n"
+            f"   - 'Strike' in combat context → slash/smite/burst, NOT 'labor dispute'\n"
+            f"   - Adapt all polysemous words to their in-game meaning, not the most common general meaning.\n"
+            f"10. NEVER transliterate English compound nouns into katakana when a natural Japanese gaming equivalent exists:\n"
+            f"    - 'projectile weapon' → '遠距離武器' or '投射武器', NOT 'プロジェクタイル武器'\n"
+            f"    - 'melee weapon' → '近接武器', NOT 'ミーリー武器'\n"
+            f"    - 'ranged attack' → '遠距離攻撃', NOT 'レンジド攻撃'\n"
+            f"    - 'projectile' (in combat context) → '投射物' or '弾丸', NOT 'プロジェクタイル'\n"
+            f"    - 'area of effect' → '範囲効果', NOT 'エリアオブエフェクト'\n"
+            f"    - 'aggressive' (behavior/mob) → '攻撃的' or '好戦的', NOT 'アグレッシブ'\n"
+            f"    - When an English compound has a natural Japanese equivalent, ALWAYS prefer it over katakana transliteration.\n"
+            f"11. ONLY proper nouns (entity/mob/boss/biome/structure names) are transliterated to katakana.\n"
+            f"    Do NOT extend this rule to common nouns, adjectives, or compound terms.\n"
+            f"    Examples: Invoker → インヴォーカー, Evoker → エヴォーカー, Warden → ウォーデン, Pillager → ピリジャー, Phantom → ファントム\n"
+            f"12. If a term appears in the glossary below, you MUST use the glossary translation exactly as specified.\n"
+        )
+
+        if self.source_type == "ftbquest":
+            base += (
+                "\n=== FTB QUESTS CONTEXT ===\n"
+                "You are translating text from FTB Quests (a Minecraft quest modpack system).\n"
+                "Keys follow the pattern: chapter.XXXX.title, quest.XXXX.title, quest.XXXX.subtitle, "
+                "quest.XXXX.descriptionN, task.XXXX.title, reward.XXXX.title\n\n"
+                "- chapter.title: Chapter title. Keep it 2-6 characters, concise and evocative. "
+                "Examples: 「始まり」「鋼の試練」「深淵」\n"
+                "- quest.title: Quest name. Brief noun phrase or short imperative. "
+                "Examples: 「石炭を見つけよう」「鉄の装備」「モブの討伐」\n"
+                "- quest.subtitle: Quest subtitle. One short sentence setting the quest tone.\n"
+                "- quest.description: Quest description addressed to the player. "
+                "Use narrative style (〜だ。〜である。) for world-building explanations. "
+                "For instructional text, use imperative (〜せよ。〜を探せ。) or soft request (〜しよう。〜してみよう。).\n"
+                "- task.title / reward.title: Short noun phrase — just the item or mob name itself. "
+                "DO NOT write full sentences like 「アイテムを集める」 or 「モブを倒す」. "
+                "Examples: 「鉄のインゴット」「ゾンビ」「ダイヤモンドのツルハシ」\n"
+            )
+        elif self.source_type == "datapack":
+            base += (
+                "\n=== DATAPACK CONTEXT ===\n"
+                "You are translating text from a Minecraft datapack (RPG skill/class/stat system).\n"
+                "Keys include: spell names, spell descriptions, perk/talent names, stat names, "
+                "unique gear names, support gem descriptions, class names, runeword names, etc.\n\n"
+                "- Spell/skill names: Concise, 2-6 characters. Use katakana for proper nouns, "
+                "kanji for generic abilities. Examples: 「火球」「フリーズ」「鉄壁」\n"
+                "- Spell/skill descriptions: Accurately convey numerical values and effects. "
+                "Preserve all numbers, percentages, and mechanical keywords exactly. "
+                "Example: 'Deals 150% fire damage to enemies in a 3-block radius' → "
+                "'半径3ブロック以内の敵に火属性ダメージ150%を与える'\n"
+                "- Stat names: Very concise, 2-4 characters. Examples: 「攻撃力」「魔力」「防御」\n"
+                "- Class/school names: Concise katakana or kanji. Examples: 「火術師」「バーサーカー」\n"
+            )
+        else:
+            base += (
+                "\n=== MOD ITEM/BLOCK CONTEXT ===\n"
+                "- Item/block names: Concise. Avoid overly long names. "
+                "Examples: 「ダイヤモンドの剣」「不思議なリンゴ」\n"
+                "- Tooltip/description: Practical and readable. Preserve formatting codes.\n"
+                "- Advancement titles: Short and punchy.\n"
+                "- Advancement descriptions: One sentence hint about the achievement.\n"
+            )
+
+        return base
+
     def __init__(self, items, api_key, model, glossary=None, parallel_count=3, 
-                 memory=None, mod_name=None, target_lang="ja_jp"):
+                 memory=None, mod_name=None, target_lang="ja_jp", source_type=None):
         super().__init__()
         self.items = items
         self._api_key = api_key
@@ -280,6 +367,7 @@ class TranslatorThread(QThread):
         self._batches_since_save = 0
         self.save_interval = 5
         self.target_lang = target_lang
+        self.source_type = source_type
 
     def _create_batches(self, items):
         batches = []
@@ -485,46 +573,7 @@ class TranslatorThread(QThread):
         lang_info = TARGET_LANGUAGES.get(self.target_lang, ("Japanese", "日本語"))
         lang_english = lang_info[0]
         
-        system_content = (
-            f"You are a professional translator for Minecraft mods and RPG games.\n"
-            f"Your task is to translate English text into natural {lang_english}.\n"
-            f"You will receive a JSON object. The keys are identifiers (DO NOT CHANGE KEYS). The values are the English text to translate.\n\n"
-            f"=== FORMAT RULES ===\n"
-            f"1. Translate the value of each key from English to {lang_english}.\n"
-            f"2. CRITICAL: Keep ALL placeholders like __VAR_0__, __VAR_1__ EXACTLY as they are. DO NOT modify, translate, or remove them.\n"
-            f"3. CRITICAL: When multiple __VAR_N__ placeholders appear near each other, "
-            f"you MUST keep their original left-to-right order. Do not swap or reorder adjacent placeholders.\n"
-            f"4. Output ONLY the valid JSON object. No markdown formatting.\n\n"
-            f"=== SYNTAX RULES ===\n"
-            f"5. Restructure English relative clauses into {lang_english} pre-modifiers:\n"
-            f'   "A sword which deals fire damage" → "火ダメージを与える剣"\n'
-            f'   "The player who defeated the dragon" → "ドラゴンを倒したプレイヤー"\n'
-            f"   NEVER leave English-style post-modifiers as-is.\n"
-            f"6. NEVER translate word-by-word. Read the full sentence first, understand its meaning in context, then produce a natural {lang_english} sentence with correct grammar and word order.\n\n"
-            f"=== STYLE RULES ===\n"
-            f"7. Use 常体 (だ・である調), NOT 敬体 (です・ます調). This matches the official Minecraft {lang_english} translation style.\n"
-            f'   Example: "Increases attack power" → "攻撃力が上がる", NOT "攻撃力が上がります"\n\n'
-            f"=== CONTEXT & VOCABULARY RULES ===\n"
-            f"8. All text is from Minecraft mods, RPG games, or fantasy settings. Translate with this context in mind.\n"
-            f"9. Choose words that fit the game/fantasy context, not literal dictionary meanings:\n"
-            f"   - 'Spiritual' in combat/magic context → mystic/divine/holy, NOT 'mental/psychological'\n"
-            f"   - 'Throw' in attack/skill context → hurl/launch/cast, NOT 'toss away'\n"
-            f"   - 'Spirit' in fantasy context → soul/phantom/aura, NOT 'enthusiasm'\n"
-            f"   - 'Strike' in combat context → slash/smite/burst, NOT 'labor dispute'\n"
-            f"   - Adapt all polysemous words to their in-game meaning, not the most common general meaning.\n"
-            f"10. NEVER transliterate English compound nouns into katakana when a natural Japanese gaming equivalent exists:\n"
-            f"    - 'projectile weapon' → '遠距離武器' or '投射武器', NOT 'プロジェクタイル武器'\n"
-            f"    - 'melee weapon' → '近接武器', NOT 'ミーリー武器'\n"
-            f"    - 'ranged attack' → '遠距離攻撃', NOT 'レンジド攻撃'\n"
-            f"    - 'projectile' (in combat context) → '投射物' or '弾丸', NOT 'プロジェクタイル'\n"
-            f"    - 'area of effect' → '範囲効果', NOT 'エリアオブエフェクト'\n"
-            f"    - 'aggressive' (behavior/mob) → '攻撃的' or '好戦的', NOT 'アグレッシブ'\n"
-            f"    - When an English compound has a natural Japanese equivalent, ALWAYS prefer it over katakana transliteration.\n"
-            f"11. ONLY proper nouns (entity/mob/boss/biome/structure names) are transliterated to katakana.\n"
-            f"    Do NOT extend this rule to common nouns, adjectives, or compound terms.\n"
-            f"    Examples: Invoker → インヴォーカー, Evoker → エヴォーカー, Warden → ウォーデン, Pillager → ピリジャー, Phantom → ファントム\n"
-            f"12. If a term appears in the glossary below, you MUST use the glossary translation exactly as specified.\n"
-        )
+        system_content = self._build_system_prompt(lang_english)
 
         if self.glossary:
             batch_text = " ".join([str(v) for v in unique_items.values()])

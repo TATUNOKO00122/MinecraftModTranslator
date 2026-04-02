@@ -1480,10 +1480,15 @@ class MainWindow(QMainWindow):
         if self.current_mod_path and self.current_mod_path in self.loaded_mods:
             mod_name = self.loaded_mods[self.current_mod_path].get("name")
         
+        source_type = None
+        if self.current_mod_path and self.current_mod_path in self.loaded_mods:
+            source_type = self.loaded_mods[self.current_mod_path].get("type")
+        
         self.translator_thread = TranslatorThread(
             items, api_key, model, glossary_terms, parallel_count,
             memory=self.memory, mod_name=mod_name,
-            target_lang=settings.get("target_lang", "ja_jp")
+            target_lang=settings.get("target_lang", "ja_jp"),
+            source_type=source_type
         )
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self.on_translate_finished)
@@ -1748,7 +1753,8 @@ class MainWindow(QMainWindow):
         
         self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms, parallel_count,
                                                    memory=self.memory, mod_name="(batch)",
-                                                   target_lang=settings.get("target_lang", "ja_jp"))
+                                                   target_lang=settings.get("target_lang", "ja_jp"),
+                                                   source_type=None)
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self._on_batch_translate_finished)
         self.translator_thread.stopped.connect(self._on_batch_translate_stopped)
