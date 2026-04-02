@@ -2,9 +2,10 @@ import json
 import os
 
 class Glossary:
-    def __init__(self, filepath="glossary.json"):
+    def __init__(self, filepath="glossary.json", default_glossary_path=None):
         self.filepath = filepath
-        self.terms = {} # { "original": "translation" }
+        self.default_glossary_path = default_glossary_path
+        self.terms = {}
         self.load()
 
     def load(self):
@@ -12,9 +13,29 @@ class Glossary:
             try:
                 with open(self.filepath, 'r', encoding='utf-8') as f:
                     self.terms = json.load(f)
+                return
             except Exception as e:
                 print(f"Failed to load glossary: {e}")
-                self.terms = {}
+
+        if self.default_glossary_path and os.path.exists(self.default_glossary_path):
+            self._load_default_glossary()
+
+    def _load_default_glossary(self):
+        try:
+            with open(self.default_glossary_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if ' → ' in line:
+                        parts = line.split(' → ', 1)
+                        key = parts[0].strip()
+                        value = parts[1].strip()
+                        if key and value:
+                            self.terms[key] = value
+            self.save()
+        except Exception as e:
+            print(f"Failed to load default glossary: {e}")
 
     def save(self):
         try:

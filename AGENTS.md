@@ -13,7 +13,7 @@ python main.py
 
 # Build standalone EXE (PyInstaller)
 pip install pyinstaller
-pyinstaller --noconfirm --onefile --windowed --name "MinecraftModTranslator" --add-data "ui/styles.qss;ui" main.py
+pyinstaller --noconfirm --onefile --windowed --name "MinecraftModTranslator" --add-data "ui/styles.qss;ui" --add-data "ui/default_glossary.md;ui" main.py
 
 # Install dependencies
 pip install PySide6 requests ftb_snbt_lib

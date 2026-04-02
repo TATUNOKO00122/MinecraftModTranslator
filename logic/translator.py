@@ -512,15 +512,28 @@ class TranslatorThread(QThread):
             f"   - 'Spirit' in fantasy context → soul/phantom/aura, NOT 'enthusiasm'\n"
             f"   - 'Strike' in combat context → slash/smite/burst, NOT 'labor dispute'\n"
             f"   - Adapt all polysemous words to their in-game meaning, not the most common general meaning.\n"
-            f"10. Use established Minecraft/gaming terms consistently. Keep proper nouns as transliterations.\n"
-            f"11. If a term appears in the glossary below, you MUST use the glossary translation exactly as specified.\n"
+            f"10. NEVER transliterate English compound nouns into katakana when a natural Japanese gaming equivalent exists:\n"
+            f"    - 'projectile weapon' → '遠距離武器' or '投射武器', NOT 'プロジェクタイル武器'\n"
+            f"    - 'melee weapon' → '近接武器', NOT 'ミーリー武器'\n"
+            f"    - 'ranged attack' → '遠距離攻撃', NOT 'レンジド攻撃'\n"
+            f"    - 'projectile' (in combat context) → '投射物' or '弾丸', NOT 'プロジェクタイル'\n"
+            f"    - 'area of effect' → '範囲効果', NOT 'エリアオブエフェクト'\n"
+            f"    - 'aggressive' (behavior/mob) → '攻撃的' or '好戦的', NOT 'アグレッシブ'\n"
+            f"    - When an English compound has a natural Japanese equivalent, ALWAYS prefer it over katakana transliteration.\n"
+            f"11. ONLY proper nouns (entity/mob/boss/biome/structure names) are transliterated to katakana.\n"
+            f"    Do NOT extend this rule to common nouns, adjectives, or compound terms.\n"
+            f"    Examples: Invoker → インヴォーカー, Evoker → エヴォーカー, Warden → ウォーデン, Pillager → ピリジャー, Phantom → ファントム\n"
+            f"12. If a term appears in the glossary below, you MUST use the glossary translation exactly as specified.\n"
         )
 
         if self.glossary:
-            batch_text_lower = " ".join([str(v) for v in unique_items.values()]).lower()
+            batch_text = " ".join([str(v) for v in unique_items.values()])
+            batch_text_clean = batch_text.lower()
+            for pat in COMPILED_PATTERNS:
+                batch_text_clean = pat.sub(' ', batch_text_clean)
             relevant_terms = {}
             for k, v in self.glossary.items():
-                if re.search(r'\b' + re.escape(k.lower()) + r'\b', batch_text_lower):
+                if re.search(r'\b' + re.escape(k.lower()) + r'\b', batch_text_clean):
                     relevant_terms[k] = v
             
             if relevant_terms:

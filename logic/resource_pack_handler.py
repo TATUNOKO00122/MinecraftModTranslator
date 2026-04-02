@@ -165,11 +165,22 @@ class ResourcePackImportThread(QThread):
                 ns = parts[1]
                 namespace_map.setdefault(ns, []).append(pack_path)
 
+        translation_key_sets = {
+            pack_path: set(trans.keys())
+            for pack_path, trans in all_translations.items()
+        }
+
+        ftbquest_paths = [
+            pack_path for pack_path in all_translations
+            if "ftbquests" in pack_path.replace('\\', '/')
+        ]
+
         mods_list = list(self.loaded_mods.items())
         total_mods = len(mods_list)
         applied_count = 0
         matched_mods = []
         memory_updates = {}
+        progress_interval = max(1, total_mods // 100)
 
         for i, (mod_path, mod_data) in enumerate(mods_list):
             if not self.is_running:
@@ -178,14 +189,17 @@ class ResourcePackImportThread(QThread):
             target_file = mod_data["target_file"].replace('\\', '/')
             ja_target = target_file.replace('en_us', self.target_lang)
             mod_type = mod_data.get("type", "mod")
+            mod_keys = set(mod_data["original"].keys())
 
-            found_translations = self._find_matching_translations(
+            found_translations, pack_path = self._find_matching_translations(
                 mod_data, ja_target, mod_type, all_translations,
-                target_suffix_map, namespace_map
+                target_suffix_map, namespace_map,
+                translation_key_sets, ftbquest_paths
             )
 
             if found_translations is not None:
-                matching_keys = set(found_translations.keys()) & set(mod_data["original"].keys())
+                pack_keys = translation_key_sets.get(pack_path, set(found_translations.keys()))
+                matching_keys = pack_keys & mod_keys
                 if matching_keys:
                     updates = {}
                     for key in matching_keys:
@@ -195,7 +209,7 @@ class ResourcePackImportThread(QThread):
                     matched_mods.append(mod_data["name"])
                     memory_updates.update(updates)
 
-            if (i + 1) % 10 == 0 or i + 1 == total_mods:
+            if (i + 1) % progress_interval == 0 or i + 1 == total_mods:
                 self.progress.emit(i + 1, total_mods, "match")
 
         if memory_updates:
@@ -204,7 +218,8 @@ class ResourcePackImportThread(QThread):
         self.finished.emit(all_translations, applied_count, matched_mods)
 
     def _find_matching_translations(self, mod_data, ja_target, mod_type,
-                                     all_translations, target_suffix_map, namespace_map):
+                                     all_translations, target_suffix_map, namespace_map,
+                                     translation_key_sets=None, ftbquest_paths=None):
         ja_target_norm = ja_target.replace('\\', '/')
 
         filename = ja_target_norm.rsplit('/', 1)[-1] if '/' in ja_target_norm else ja_target_norm
@@ -212,12 +227,11 @@ class ResourcePackImportThread(QThread):
             for pack_path in target_suffix_map[filename]:
                 pack_norm = pack_path.replace('\\', '/')
                 if pack_norm.endswith(ja_target_norm) or ja_target_norm.endswith(pack_norm):
-                    return all_translations[pack_path]
+                    return all_translations[pack_path], pack_path
 
-        if mod_type == "ftbquest":
-            for pack_path, translations in all_translations.items():
-                if "ftbquests" in pack_path.replace('\\', '/'):
-                    return translations
+        if mod_type == "ftbquest" and ftbquest_paths:
+            for pack_path in ftbquest_paths:
+                return all_translations[pack_path], pack_path
 
         if mod_type != "ftbquest":
             mod_ns = self._extract_namespace(ja_target_norm)
@@ -225,15 +239,15 @@ class ResourcePackImportThread(QThread):
                 for pack_path in namespace_map[mod_ns]:
                     pack_norm = pack_path.replace('\\', '/')
                     if pack_norm.endswith(ja_target_norm) or ja_target_norm.endswith(pack_norm):
-                        return all_translations[pack_path]
+                        return all_translations[pack_path], pack_path
 
-        if mod_type == "ftbquest":
+        if mod_type == "ftbquest" and translation_key_sets is not None:
             mod_keys = set(mod_data["original"].keys())
-            for pack_path, translations in all_translations.items():
-                if mod_keys & set(translations.keys()):
-                    return translations
+            for pack_path, keys in translation_key_sets.items():
+                if mod_keys & keys:
+                    return all_translations[pack_path], pack_path
 
-        return None
+        return None, None
 
     @staticmethod
     def _extract_namespace(path):

@@ -28,7 +28,7 @@ def main():
         with open(style_path, 'r', encoding='utf-8') as f:
             app.setStyleSheet(f.read())
             
-    window = MainWindow()
+    window = MainWindow(base_path=base_path)
     window.show()
     window.raise_()  # 最前面に表示
     window.activateWindow()  # アクティブ化

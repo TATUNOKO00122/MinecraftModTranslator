@@ -45,8 +45,6 @@ Nugget → ナゲット
 Iron Nugget → 鉄ナゲット
 Gold Nugget → 金ナゲット
 Dust → 粉
-Gear → 歯車
-Rod → 棒
 Stick → 棒
 Plank → 板材
 Log → 原木
@@ -129,7 +127,7 @@ Compass → コンパス
 Recovery Compass → リカバリーコンパス
 Clock → 時計
 Name Tag → 名札
-Lead → 鉛
+
 Saddle → 馬鞍
 Shears → ハサミ
 Flint and Steel → 火打石と打ち金
@@ -362,7 +360,7 @@ Wolf Armor → オオカミの防具（1.20.5+）
 Armadillo Scute → アルマジロの甲羅（1.20.5+）
 Smithing Template → 鍛冶テンプレート
 Smithing Trim → 鍛冶装飾
-Trim → 装飾
+
 Trim Material → 装飾材料
 Trim Pattern → 装飾パターン
 Upgrade → アップグレード
@@ -666,11 +664,11 @@ Potion → ポーション
 Splash Potion → スプラッシュポーション
 Lingering Potion → 残留ポーション
 Arrow of → 矢（...の）
-Speed → 移動速度上昇
+
 Slowness → 移動速度低下
 Haste → 採掘速度上昇
 Mining Fatigue → 採掘速度低下
-Strength → 攻撃力上昇
+
 Instant Health → 即時回復
 Instant Damage → 即時ダメージ
 Jump Boost → 跳躍力上昇
@@ -999,6 +997,20 @@ Fall → 落下
 Teleport → テレポート
 Warp → ワープ
 
+## 戦闘・武器カテゴリ（カタカナ直訳防止用）
+projectile weapon → 遠距離武器
+ranged weapon → 遠距離武器
+melee weapon → 近接武器
+ranged attack → 遠距離攻撃
+melee attack → 近接攻撃
+ranged combat → 遠距離戦闘
+melee combat → 近接戦闘
+projectile → 投射物
+area of effect → 範囲効果
+aggressive mob → 敵対Mob
+passive mob → 温和なMob
+neutral mob → 中立Mob
+
 ## 進捗・Achievement
 Advancement → 進捗
 Achievement → 実績
@@ -1226,11 +1238,10 @@ Core → コア
 ## 魔術系MOD
 Magic → 魔法
 Mana → マナ
-Spell → 呪文
+Projectile Weapon → 遠距離武器
+Ranged Weapon → 遠距離武器
 Ritual → 儀式
 Altar → 祭壇
-Wand → 杖
-Staff → 杖
 Orb → オーブ
 Crystal → クリスタル
 Gem → 宝石
@@ -1240,7 +1251,7 @@ Sigil → シジル
 Talisman → タリスマン
 Amulet → アミュレット
 Ring → 指輪
-Tome → 本/トーム
+
 Grimoire → 魔導書
 Scroll → 巻物
 Essence → エッセンス
@@ -1326,7 +1337,7 @@ Organize → 整理
 Stack → スタック
 Compress → 圧縮
 Decompress → 解凍
-Void → 消去
+
 Trash → ゴミ箱
 Blacklist → ブラックリスト
 Whitelist → ホワイトリスト
@@ -1388,7 +1399,7 @@ Nether Portal → ネザーポータル
 Obsidian Platform → 黒曜石の足場
 Spawn Island → スポーン島
 Main Island → 本島
-Void → ヴォイド
+
 Void Fog → ヴォイド霧
 Reinforced Deepslate → 強化深層岩
 Warden's Cabin → ウォーデンの小屋
@@ -1461,7 +1472,7 @@ Support → サポート
 Foundation → 基礎
 Corner → コーナー
 Edge → エッジ
-Trim → トリム
+
 Molding → モールディング
 Pattern → パターン
 Texture → テクスチャ

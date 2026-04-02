@@ -65,7 +65,7 @@ class MainWindow(QMainWindow):
             json.dump(data, f, ensure_ascii=False, indent=2)
         MainWindow._restrict_file_permissions(path)
     
-    def __init__(self):
+    def __init__(self, base_path=None):
         super().__init__()
         self.setWindowTitle("Minecraft MOD 翻訳ツール")
         self.resize(1200, 800)
@@ -77,7 +77,13 @@ class MainWindow(QMainWindow):
 
         self.file_handler = FileHandler()
         self.memory = TranslationMemory()
-        self.glossary = Glossary()
+
+        default_glossary_path = None
+        if base_path:
+            candidate = os.path.join(base_path, 'ui', 'default_glossary.md')
+            if os.path.exists(candidate):
+                default_glossary_path = candidate
+        self.glossary = Glossary(default_glossary_path=default_glossary_path)
         self.settings_dialog = SettingsDialog(self)
         self.translator_thread = None
         
@@ -1306,11 +1312,14 @@ class MainWindow(QMainWindow):
         self._close_busy()
         self.statusBar().showMessage("リソースパックの適用が完了しました", 3000)
 
-        # Update current mod display if it was affected
         if self.current_mod_path and self.current_mod_path in self.loaded_mods:
             self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
         
-        self.refresh_all_mod_colors()
+        self.mod_list.setUpdatesEnabled(False)
+        try:
+            self.refresh_all_mod_colors()
+        finally:
+            self.mod_list.setUpdatesEnabled(True)
 
         if matched_mods:
             QMessageBox.information(self, "リソースパック適用", 
