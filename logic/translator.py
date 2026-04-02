@@ -345,43 +345,34 @@ class TranslatorThread(QThread):
     def _build_system_prompt(self, lang_english):
         base = (
             f"You are a professional translator for Minecraft mods and RPG games.\n"
-            f"Your task is to translate English text into natural {lang_english}.\n"
-            f"You will receive a JSON object. The keys are identifiers (DO NOT CHANGE KEYS). The values are the English text to translate.\n\n"
-            f"=== FORMAT RULES ===\n"
-            f"1. Translate the value of each key from English to {lang_english}.\n"
-            f"2. CRITICAL: Keep ALL tokens enclosed in ⟨⟩ brackets EXACTLY as they are (e.g. ⟨a1b2c3d4e5f6⟩). DO NOT modify, translate, remove, or reorder them.\n"
-            f"3. CRITICAL: When multiple ⟨...⟩ tokens appear near each other, "
-            f"you MUST keep their original left-to-right order. Do not swap or reorder adjacent tokens.\n"
-            f"4. Output ONLY the valid JSON object. No markdown formatting.\n\n"
-            f"=== SYNTAX RULES ===\n"
-            f"5. Restructure English relative clauses into {lang_english} pre-modifiers:\n"
+            f"Translate English text into natural {lang_english}.\n"
+            f"You will receive a JSON object. The keys are identifiers (DO NOT CHANGE KEYS). "
+            f"The values are the English text to translate.\n\n"
+            f"=== CRITICAL (failure = broken output) ===\n"
+            f"1. Keep ALL ⟨⟩ tokens EXACTLY as-is (e.g. ⟨a1b2c3d4e5f6⟩). "
+            f"DO NOT modify, translate, remove, or reorder them.\n"
+            f"2. When multiple ⟨...⟩ tokens appear together, keep their original left-to-right order.\n"
+            f"3. Output ONLY valid JSON. No markdown fences.\n"
+            f"4. Glossary terms MUST be used exactly as specified (see glossary section below).\n\n"
+            f"=== SYNTAX ===\n"
+            f"5. Restructure relative clauses into {lang_english} pre-modifiers:\n"
             f'   "A sword which deals fire damage" → "火ダメージを与える剣"\n'
             f'   "The player who defeated the dragon" → "ドラゴンを倒したプレイヤー"\n'
+            f'   "A potion which restores health and grants resistance" → "体力を回復し、耐性を付与するポーション"\n'
+            f'   "The mob that spawns in nether fortresses and drops blaze rods" → "ネザー要塞にスポーンし、ブレイズロッドをドロップするモブ"\n'
             f"   NEVER leave English-style post-modifiers as-is.\n"
-            f"6. NEVER translate word-by-word. Read the full sentence first, understand its meaning in context, then produce a natural {lang_english} sentence with correct grammar and word order.\n\n"
-            f"=== STYLE RULES ===\n"
-            f"7. Use 常体 (だ・である調), NOT 敬体 (です・ます調). This matches the official Minecraft {lang_english} translation style.\n"
-            f'   Example: "Increases attack power" → "攻撃力が上がる", NOT "攻撃力が上がります"\n\n'
-            f"=== CONTEXT & VOCABULARY RULES ===\n"
-            f"8. All text is from Minecraft mods, RPG games, or fantasy settings. Translate with this context in mind.\n"
-            f"9. Choose words that fit the game/fantasy context, not literal dictionary meanings:\n"
-            f"   - 'Spiritual' in combat/magic context → mystic/divine/holy, NOT 'mental/psychological'\n"
-            f"   - 'Throw' in attack/skill context → hurl/launch/cast, NOT 'toss away'\n"
-            f"   - 'Spirit' in fantasy context → soul/phantom/aura, NOT 'enthusiasm'\n"
-            f"   - 'Strike' in combat context → slash/smite/burst, NOT 'labor dispute'\n"
-            f"   - Adapt all polysemous words to their in-game meaning, not the most common general meaning.\n"
-            f"10. NEVER transliterate English compound nouns into katakana when a natural Japanese gaming equivalent exists:\n"
-            f"    - 'projectile weapon' → '遠距離武器' or '投射武器', NOT 'プロジェクタイル武器'\n"
-            f"    - 'melee weapon' → '近接武器', NOT 'ミーリー武器'\n"
-            f"    - 'ranged attack' → '遠距離攻撃', NOT 'レンジド攻撃'\n"
-            f"    - 'projectile' (in combat context) → '投射物' or '弾丸', NOT 'プロジェクタイル'\n"
-            f"    - 'area of effect' → '範囲効果', NOT 'エリアオブエフェクト'\n"
-            f"    - 'aggressive' (behavior/mob) → '攻撃的' or '好戦的', NOT 'アグレッシブ'\n"
-            f"    - When an English compound has a natural Japanese equivalent, ALWAYS prefer it over katakana transliteration.\n"
-            f"11. ONLY proper nouns (entity/mob/boss/biome/structure names) are transliterated to katakana.\n"
-            f"    Do NOT extend this rule to common nouns, adjectives, or compound terms.\n"
-            f"    Examples: Invoker → インヴォーカー, Evoker → エヴォーカー, Warden → ウォーデン, Pillager → ピリジャー, Phantom → ファントム\n"
-            f"12. If a term appears in the glossary below, you MUST use the glossary translation exactly as specified.\n"
+            f"6. NEVER word-by-word translate. Read the full sentence, understand meaning, produce natural {lang_english}.\n\n"
+            f"=== STYLE ===\n"
+            f"7. Use 常体 (だ・である調), NOT 敬体 (です・ます調).\n"
+            f'   "Increases attack power" → "攻撃力が上がる", NOT "攻撃力が上がります"\n'
+            f"8. Game/fantasy context only. Polysemous words → in-game meaning:\n"
+            f"   'Spiritual' → mystic/divine (NOT mental), 'Throw' attack → hurl/cast (NOT toss), "
+            f"'Spirit' → soul/phantom (NOT enthusiasm)\n"
+            f"9. Prefer natural Japanese compounds over katakana transliteration:\n"
+            f"   'melee weapon' → '近接武器' (NOT ミーリー武器), 'ranged attack' → '遠距離攻撃' (NOT レンジド攻撃), "
+            f"'area of effect' → '範囲効果' (NOT エリアオブエフェクト)\n"
+            f"10. ONLY proper nouns (entity/boss/biome names) use katakana: "
+            f"Invoker → インヴォーカー, Warden → ウォーデン\n"
         )
 
         if self.source_type == "ftbquest":
@@ -498,14 +489,14 @@ class TranslatorThread(QThread):
                     
                     self._batches_since_save += 1
                     if self._batches_since_save >= self.save_interval:
-                        self._progressive_save(results, batch_items)
+                        self._progressive_save(results, batch_items, validation_results)
                         self._batches_since_save = 0
                 except Exception as e:
                     print(f"Batch {batch_idx + 1} failed: {e}")
                     self.error.emit(f"Batch {batch_idx + 1} failed: {e}")
                 
                 if not self.is_running:
-                    self._progressive_save(results, {})
+                    self._progressive_save(results, {}, validation_results)
                     self.stopped.emit(results)
                     return
                 
@@ -515,7 +506,7 @@ class TranslatorThread(QThread):
         else:
             self._run_parallel(batches, results, validation_results, total_items)
             if not self.is_running:
-                self._progressive_save(results, {})
+                self._progressive_save(results, {}, validation_results)
                 self.stopped.emit(results)
                 return
 
@@ -569,7 +560,7 @@ class TranslatorThread(QThread):
                     batches_since_save += 1
             
             if batches_since_save >= self.save_interval:
-                self._progressive_save(results, {})
+                self._progressive_save(results, {}, validation_results)
                 batches_since_save = 0
             
             batch_index = chunk_end
@@ -706,6 +697,7 @@ class TranslatorThread(QThread):
 
         data = {
             "model": self.model,
+            "temperature": 0.2,
             "messages": [
                 {
                     "role": "system",
@@ -879,22 +871,38 @@ class TranslatorThread(QThread):
 
         return resolved
 
-    def _progressive_save(self, results: dict, batch_sources: dict):
+    def _progressive_save(self, results: dict, batch_sources: dict, validation_results: dict = None):
         if not self.memory or not results:
             return
         
         try:
-            self.memory.set_context(
-                mod_name=self.mod_name,
-                model=self.model,
-                sources=self.items
-            )
+            saveable = results
+            if validation_results:
+                BLOCKED_ISSUES = {
+                    "Placeholder corruption",
+                    "Placeholder count mismatch",
+                    "Nested braces",
+                    "Unreplaced placeholder",
+                }
+                saveable = {
+                    k: v for k, v in results.items()
+                    if k not in validation_results or not any(
+                        any(bad in issue for bad in BLOCKED_ISSUES)
+                        for issue in validation_results[k].get("issues", [])
+                    )
+                }
             
-            self.memory.update(results)
+            if saveable:
+                self.memory.set_context(
+                    mod_name=self.mod_name,
+                    model=self.model,
+                    sources=self.items
+                )
+                self.memory.update(saveable)
+                print(f"Progressive save: {len(saveable)}/{len(results)} translations saved "
+                      f"({len(results) - len(saveable)} filtered)")
             
             self.partial_save.emit(results)
-            
-            print(f"Progressive save: {len(results)} translations saved")
         except Exception as e:
             print(f"Progressive save failed: {e}")
 
