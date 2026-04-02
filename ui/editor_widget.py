@@ -67,7 +67,7 @@ class EditorWidget(QWidget):
         toolbar.addWidget(self.search_input)
         
         # All MODs search button
-        self.search_all_mods_btn = QPushButton("横断検索")
+        self.search_all_mods_btn = QPushButton("検索")
         self.search_all_mods_btn.setToolTip("検索語が含まれるMODのみを一覧に表示します")
         self.search_all_mods_btn.clicked.connect(self._on_search_all_mods_clicked)
         toolbar.addWidget(self.search_all_mods_btn)

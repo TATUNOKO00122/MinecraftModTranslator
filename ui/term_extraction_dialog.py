@@ -81,6 +81,7 @@ class TermExtractionDialog(QDialog):
             checkbox = QCheckBox()
             checkbox.setChecked(not is_inconsistent)
             checkbox_widget = QWidget()
+            checkbox_widget.setStyleSheet("background: transparent;")
             cb_layout = QHBoxLayout(checkbox_widget)
             cb_layout.addWidget(checkbox)
             cb_layout.setAlignment(Qt.AlignCenter)
@@ -127,7 +128,8 @@ class TermExtractionDialog(QDialog):
         add_btn = QPushButton("選択した項目を辞書に追加")
         add_btn.clicked.connect(self._add_selected)
         add_btn.setStyleSheet(
-            "background-color: #4CAF50; color: white; font-weight: bold; padding: 8px 16px;"
+            "background-color: #007acc; color: #ffffff; border: 1px solid #007acc;"
+            " padding: 6px 14px; font-weight: bold;"
         )
         btn_layout.addWidget(add_btn)
 
@@ -372,6 +374,7 @@ class FrequentTermDialog(QDialog):
             checkbox = QCheckBox()
             checkbox.setChecked(True)
             checkbox_widget = QWidget()
+            checkbox_widget.setStyleSheet("background: transparent;")
             cb_layout = QHBoxLayout(checkbox_widget)
             cb_layout.addWidget(checkbox)
             cb_layout.setAlignment(Qt.AlignCenter)
@@ -435,7 +438,8 @@ class FrequentTermDialog(QDialog):
         add_btn = QPushButton("選択した項目を辞書に追加")
         add_btn.clicked.connect(self._add_selected)
         add_btn.setStyleSheet(
-            "background-color: #4CAF50; color: white; font-weight: bold; padding: 8px 16px;"
+            "background-color: #007acc; color: #ffffff; border: 1px solid #007acc;"
+            " padding: 6px 14px; font-weight: bold;"
         )
         btn_layout.addWidget(add_btn)
 

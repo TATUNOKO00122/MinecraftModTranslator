@@ -6,8 +6,9 @@ import stat
 import zipfile
 import ctypes
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolBar, 
-                               QFileDialog, QMessageBox, QLabel, QProgressBar, QMenu, QSplitter, QListWidget, QApplication,
-                               QDialog, QDialogButtonBox, QListWidgetItem, QToolButton, QComboBox, QPushButton, QCheckBox)
+                                QFileDialog, QMessageBox, QLabel, QProgressBar, QMenu, QSplitter, QListWidget, QApplication,
+                                QDialog, QDialogButtonBox, QListWidgetItem, QToolButton, QComboBox, QPushButton, QCheckBox,
+                                QStackedWidget, QFrame)
 from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut, QIcon, QColor
 from PySide6.QtCore import Qt, QTimer
 
@@ -90,15 +91,22 @@ class MainWindow(QMainWindow):
         self._autosave_timer.timeout.connect(self._autosave)
 
         self._setup_ui()
-        self._check_recovery_file()
-        self._check_previous_session()
+        self._show_busy("起動中", "初期化しています...", show_progress=False, show_cancel=False)
         self._autosave_timer.start(self.AUTOSAVE_INTERVAL_MS)
+        QTimer.singleShot(0, self._startup_restore)
 
     def _setup_ui(self):
-        # Central Widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+        root_layout = QVBoxLayout(central_widget)
+        root_layout.setContentsMargins(0,0,0,0)
+
+        self._stack = QStackedWidget()
+        root_layout.addWidget(self._stack)
+
+        # --- Page 0: Main content ---
+        main_page = QWidget()
+        main_layout = QVBoxLayout(main_page)
         main_layout.setContentsMargins(0,0,0,0)
         
         # Toolbar
@@ -139,9 +147,8 @@ class MainWindow(QMainWindow):
         self.apply_snbt_btn = QToolButton()
         self.apply_snbt_btn.setText("SNBT適用")
         self.apply_snbt_btn.clicked.connect(self.apply_ftbquest_snbt)
-        # Store the action returned by addWidget to control visibility
         self.apply_snbt_action = self.toolbar.addWidget(self.apply_snbt_btn)
-        self.apply_snbt_action.setVisible(False)  # Hidden until FTB Quest is loaded
+        self.apply_snbt_action.setVisible(False)
 
         # Splitter Layout
         splitter = QSplitter(Qt.Horizontal)
@@ -150,7 +157,6 @@ class MainWindow(QMainWindow):
         # Left: MOD List
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
-        # Filter dropdown (no label needed)
         
         self.mod_filter = QComboBox()
         self.mod_filter.addItem("すべて", "all")
@@ -164,7 +170,6 @@ class MainWindow(QMainWindow):
         self.mod_filter.currentIndexChanged.connect(self.filter_mod_list)
         left_layout.addWidget(self.mod_filter)
         
-        # Sort dropdown
         self.mod_sort = QComboBox()
         self.mod_sort.addItem("読み込み順", "load_order")
         self.mod_sort.addItem("名前順 (A→Z)", "name_asc")
@@ -176,10 +181,8 @@ class MainWindow(QMainWindow):
         self.mod_sort.currentIndexChanged.connect(self.sort_mod_list)
         left_layout.addWidget(self.mod_sort)
         
-        # Track original load order
         self._mod_load_order = []
         
-        # Batch translate button
         self.batch_translate_btn = QPushButton("一括翻訳")
         self.batch_translate_btn.setToolTip("フィルター後の表示MODを順番に翻訳します")
         self.batch_translate_btn.clicked.connect(self.start_batch_translate_all_mods)
@@ -198,13 +201,11 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0,0,0,0)
 
-        # Status Label
         self.mod_label = QLabel("MODファイルまたはMinecraftディレクトリをドラッグ＆ドロップしてください")
         self.mod_label.setAlignment(Qt.AlignCenter)
-        self.mod_label.setStyleSheet("font-size: 16px; color: #94a3b8; padding: 20px;")
+        self.mod_label.setStyleSheet("font-size: 16px; color: #888888; padding: 20px;")
         right_layout.addWidget(self.mod_label)
         
-        # Editor (Hidden initially)
         self.editor = EditorWidget()
         self.editor.hide()
         self.editor.table.customContextMenuRequested.connect(self.show_context_menu)
@@ -216,14 +217,13 @@ class MainWindow(QMainWindow):
         self.editor.selectionChanged.connect(self._on_editor_selection_changed)
         right_layout.addWidget(self.editor)
         
-        # Connect undo/redo toolbar actions
         self.undo_action.triggered.connect(self.editor.undo_stack.undo)
         self.redo_action.triggered.connect(self.editor.undo_stack.redo)
         self.editor.undo_stack.canUndoChanged.connect(self.undo_action.setEnabled)
         self.editor.undo_stack.canRedoChanged.connect(self.redo_action.setEnabled)
         
         splitter.addWidget(right_widget)
-        splitter.setStretchFactor(1, 4) # Make editor wider
+        splitter.setStretchFactor(1, 4)
 
         # Progress Bar and Stop Button
         progress_layout = QHBoxLayout()
@@ -237,18 +237,20 @@ class MainWindow(QMainWindow):
         self.stop_translation_btn.setFixedWidth(80)
         self.stop_translation_btn.setStyleSheet("""
             QPushButton {
-                background-color: #dc2626;
-                color: white;
-                border: none;
+                background-color: #3c3c3c;
+                color: #ff6666;
+                border: 1px solid #663333;
                 padding: 6px 12px;
-                border-radius: 4px;
+                border-radius: 0px;
                 font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #b91c1c;
+                background-color: #4c2a2a;
+                color: #ff8888;
+                border: 1px solid #884444;
             }
             QPushButton:pressed {
-                background-color: #991b1b;
+                background-color: #2d1a1a;
             }
         """)
         self.stop_translation_btn.clicked.connect(self.stop_translation)
@@ -256,7 +258,94 @@ class MainWindow(QMainWindow):
         progress_layout.addWidget(self.stop_translation_btn)
         
         main_layout.addLayout(progress_layout)
-        
+
+        self._stack.addWidget(main_page)
+
+        # --- Page 1: Busy / Loading screen ---
+        busy_page = QWidget()
+        busy_page.setStyleSheet("background-color: #2b2b2b;")
+        busy_layout = QVBoxLayout(busy_page)
+        busy_layout.setAlignment(Qt.AlignCenter)
+
+        self._busy_title = QLabel("処理中")
+        self._busy_title.setAlignment(Qt.AlignCenter)
+        self._busy_title.setStyleSheet("font-size: 22px; font-weight: bold; color: #ffffff; background: transparent; border: none;")
+        busy_layout.addWidget(self._busy_title)
+
+        busy_layout.addSpacing(8)
+
+        busy_sep = QFrame()
+        busy_sep.setFixedWidth(480)
+        busy_sep.setFrameShape(QFrame.HLine)
+        busy_sep.setStyleSheet("color: #3d3d3d;")
+        busy_layout.addWidget(busy_sep, alignment=Qt.AlignCenter)
+
+        busy_layout.addSpacing(12)
+
+        self._busy_message = QLabel("しばらくお待ちください...")
+        self._busy_message.setAlignment(Qt.AlignCenter)
+        self._busy_message.setStyleSheet("font-size: 14px; color: #888888; background: transparent; border: none;")
+        busy_layout.addWidget(self._busy_message)
+
+        busy_layout.addSpacing(20)
+
+        self._busy_progress = QProgressBar()
+        self._busy_progress.setRange(0, 0)
+        self._busy_progress.setFixedWidth(480)
+        self._busy_progress.setTextVisible(True)
+        self._busy_progress.setFormat("準備中...")
+        self._busy_progress.setStyleSheet("""
+            QProgressBar {
+                background-color: #1e1e1e;
+                border: 1px solid #3d3d3d;
+                border-radius: 0px;
+                text-align: center;
+                color: #d4d4d4;
+                min-height: 22px;
+                font-size: 12px;
+            }
+            QProgressBar::chunk {
+                background-color: #007acc;
+                border: none;
+            }
+        """)
+        busy_layout.addWidget(self._busy_progress, alignment=Qt.AlignCenter)
+
+        busy_layout.addSpacing(20)
+
+        self._busy_cancel_btn = QPushButton("キャンセル")
+        self._busy_cancel_btn.setFixedSize(120, 32)
+        self._busy_cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3c3c3c;
+                color: #d4d4d4;
+                border: 1px solid #3d3d3d;
+                border-radius: 0px;
+                padding: 6px 14px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #505050;
+                color: #ffffff;
+            }
+            QPushButton:pressed {
+                background-color: #2d2d2d;
+            }
+            QPushButton:disabled {
+                background-color: #3c3c3c;
+                color: #666666;
+            }
+        """)
+        busy_layout.addWidget(self._busy_cancel_btn, alignment=Qt.AlignCenter)
+
+        busy_layout.addStretch()
+
+        self._stack.addWidget(busy_page)
+        self._stack.setCurrentIndex(0)
+
+        self._cancellable_thread = None
+        self._busy_cancel_btn.clicked.connect(self._on_busy_cancel)
+
         self._setup_shortcuts()
 
     def _setup_shortcuts(self):
@@ -265,6 +354,11 @@ class MainWindow(QMainWindow):
         
         find_shortcut = QShortcut(QKeySequence.Find, self)
         find_shortcut.activated.connect(lambda: self.editor.search_input.setFocus())
+
+    def _startup_restore(self):
+        self._check_recovery_file()
+        self._check_previous_session()
+        self._close_busy()
 
     def _check_previous_session(self):
         """Check if there's a previous session and ask to restore"""
@@ -288,14 +382,18 @@ class MainWindow(QMainWindow):
             )
             
             if confirm == QMessageBox.Yes:
-                self.progress_bar.show()
-                self.progress_bar.setMaximum(len(valid_paths))
+                total = len(valid_paths)
+                self._show_busy("セッション復元", f"前回のセッションを復元中... (0/{total})", show_cancel=False)
+                self._busy_progress.setRange(0, total)
+                self._busy_progress.setValue(0)
+                self._busy_progress.setFormat(f"0/{total}")
                 for i, path in enumerate(valid_paths):
-                    self.statusBar().showMessage(f"復元中... ({i+1}/{len(valid_paths)})")
-                    self.progress_bar.setValue(i + 1)
-                    QApplication.processEvents()
+                    self._update_busy_message(f"復元中... ({i+1}/{total})")
+                    self._update_busy_progress(i + 1, total)
+                    self._suppress_busy = True
                     self.process_path(path, silent=True)
-                self.progress_bar.hide()
+                    self._suppress_busy = False
+                self._close_busy()
                 self.statusBar().showMessage("セッション復元完了", 3000)
                 self._update_snbt_button_visibility()
             
@@ -722,13 +820,14 @@ class MainWindow(QMainWindow):
             # Red border warning style
             self.apply_snbt_btn.setStyleSheet("""
                 QToolButton {
-                    border: 2px solid #ff4444;
-                    background-color: #442222;
+                    border: 1px solid #ff4444;
+                    background-color: #3c1e1e;
                     color: #ffaaaa;
                     padding: 4px 8px;
                 }
                 QToolButton:hover {
-                    background-color: #553333;
+                    background-color: #4c2e2e;
+                    border: 1px solid #ff6666;
                 }
             """)
             self.apply_snbt_btn.setToolTip("⚠️ 未適用のクエストがあります！クリックして適用してください。")
@@ -1010,46 +1109,73 @@ class MainWindow(QMainWindow):
             self.process_path(f)
     
     def process_path(self, path, silent=False):
-        """Process a path: Minecraft folder, MOD, FTB Quest, datapack, or resource pack"""
         if os.path.isdir(path):
             ftbquest_folder = ftbquest_handler.detect_ftbquests(path)
             mods_folder = os.path.join(path, "mods")
             
             loaded_items = []
             
+            total_steps = 0
             if ftbquest_folder:
-                self.statusBar().showMessage("FTBクエストを読み込み中...")
-                self.load_ftbquest(ftbquest_folder, os.path.basename(path))
-                loaded_items.append("FTBクエスト")
-            
+                total_steps += 1
             if os.path.isdir(mods_folder):
                 mod_files = [os.path.join(mods_folder, f) for f in os.listdir(mods_folder) 
                              if f.endswith('.jar') or f.endswith('.zip')]
-                if mod_files:
-                    self.progress_bar.show()
-                    self.progress_bar.setMaximum(len(mod_files))
-                    for i, mod_file in enumerate(mod_files):
-                        self.statusBar().showMessage(f"MODを読み込み中... ({i+1}/{len(mod_files)})")
-                        self.progress_bar.setValue(i + 1)
-                        QApplication.processEvents()
-                        self.load_source(mod_file)
-                    self.progress_bar.hide()
-                    loaded_items.append(f"MOD {len(mod_files)}個")
-
+                total_steps += len(mod_files)
+            else:
+                mod_files = []
             openloader_dir = os.path.join(path, "config", "openloader", "data")
+            dp_dirs = []
             if os.path.isdir(openloader_dir):
                 dp_dirs = [
                     os.path.join(openloader_dir, d)
                     for d in os.listdir(openloader_dir)
                     if datapack_handler.detect_datapack(os.path.join(openloader_dir, d))
                 ]
-                for dp_dir in dp_dirs:
-                    self.load_datapack(dp_dir, mods_dir=mods_folder)
-                    loaded_items.append(f"データパック: {os.path.basename(dp_dir)}")
+                total_steps += len(dp_dirs)
+            if not loaded_items and not mod_files and not ftbquest_folder and not dp_dirs:
+                if datapack_handler.detect_datapack(path):
+                    total_steps += 1
+            
+            if total_steps > 0 and not getattr(self, '_suppress_busy', False):
+                self._show_busy("読み込み中", "ファイルを解析中...", show_cancel=False)
+                self._busy_progress.setRange(0, total_steps)
+                self._busy_progress.setValue(0)
+                self._busy_progress.setFormat("0/{0}".format(total_steps))
+            
+            step = 0
+            
+            if ftbquest_folder:
+                step += 1
+                if not getattr(self, '_suppress_busy', False):
+                    self._update_busy_message(f"FTBクエストを読み込み中... ({step}/{total_steps})")
+                    self._update_busy_progress(step, total_steps)
+                self.load_ftbquest(ftbquest_folder, os.path.basename(path))
+                loaded_items.append("FTBクエスト")
+            
+            if mod_files:
+                for i, mod_file in enumerate(mod_files):
+                    step += 1
+                    if not getattr(self, '_suppress_busy', False):
+                        self._update_busy_message(f"MODを読み込み中... ({step}/{total_steps})")
+                        self._update_busy_progress(step, total_steps)
+                    self.load_source(mod_file)
+                loaded_items.append(f"MOD {len(mod_files)}個")
+
+            for dp_dir in dp_dirs:
+                step += 1
+                if not getattr(self, '_suppress_busy', False):
+                    self._update_busy_message(f"データパックを読み込み中... ({step}/{total_steps})")
+                    self._update_busy_progress(step, total_steps)
+                self.load_datapack(dp_dir, mods_dir=mods_folder)
+                loaded_items.append(f"データパック: {os.path.basename(dp_dir)}")
 
             if not loaded_items and datapack_handler.detect_datapack(path):
                 self.load_datapack(path)
                 loaded_items.append("データパック")
+            
+            if total_steps > 0 and not getattr(self, '_suppress_busy', False):
+                self._close_busy()
             
             self.statusBar().showMessage("読み込み完了", 3000)
             
@@ -1214,16 +1340,13 @@ class MainWindow(QMainWindow):
         return None
     
     def import_from_path(self, path):
-        """Import resource pack from path and apply to all loaded MODs (Asynchronous)"""
         if hasattr(self, 'rp_thread') and self.rp_thread and self.rp_thread.isRunning():
             return
 
         self.progress_bar.show()
-        self.progress_bar.setRange(0, 0) # Indeterminate initially
+        self.progress_bar.setRange(0, 0)
         self.statusBar().showMessage("リソースパックを解析中...")
-        self.toolbar.setEnabled(False)
-        self.mod_list.setEnabled(False)
-        self.editor.setEnabled(False)
+        self._show_busy("リソースパック読込", "リソースパックを解析中...", show_cancel=False)
 
         self.rp_thread = ResourcePackImportThread(path, self.loaded_mods, self.file_handler, self.memory,
                                                    target_lang=self.settings_dialog.get_settings().get("target_lang", "ja_jp"))
@@ -1236,13 +1359,13 @@ class MainWindow(QMainWindow):
         if total > 0:
             self.progress_bar.setRange(0, total)
             self.progress_bar.setValue(current)
+            self._update_busy_progress(current, total)
+            self._update_busy_message(f"リソースパックを読み込み中... ({current}/{total})")
             self.statusBar().showMessage(f"リソースパックを読み込み中... ({current}/{total})")
 
     def on_rp_import_finished(self, all_translations, applied_count, matched_mods):
         self.progress_bar.hide()
-        self.toolbar.setEnabled(True)
-        self.mod_list.setEnabled(True)
-        self.editor.setEnabled(True)
+        self._close_busy()
         self.statusBar().showMessage("リソースパックの適用が完了しました", 3000)
 
         # Update current mod display if it was affected
@@ -1261,9 +1384,7 @@ class MainWindow(QMainWindow):
 
     def on_rp_import_error(self, message):
         self.progress_bar.hide()
-        self.toolbar.setEnabled(True)
-        self.mod_list.setEnabled(True)
-        self.editor.setEnabled(True)
+        self._close_busy()
         QMessageBox.critical(self, "エラー", f"リソースパック読込に失敗: {message}")
         self.rp_thread = None
 
@@ -1334,6 +1455,54 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "エラー", f"ファイルの読み込みに失敗しました ({os.path.basename(path)}):\n{e}")
 
+    def _show_busy(self, title="処理中", message="しばらくお待ちください...",
+                   show_progress=True, show_cancel=True, cancellable_thread=None):
+        self._busy_title.setText(title)
+        self._busy_message.setText(message)
+        if show_progress:
+            self._busy_progress.show()
+            self._busy_progress.setRange(0, 0)
+            self._busy_progress.setFormat("準備中...")
+        else:
+            self._busy_progress.hide()
+        if show_cancel and cancellable_thread:
+            self._busy_cancel_btn.show()
+            self._busy_cancel_btn.setEnabled(True)
+            self._busy_cancel_btn.setText("キャンセル")
+            self._cancellable_thread = cancellable_thread
+        else:
+            self._busy_cancel_btn.hide()
+            self._cancellable_thread = None
+        self._stack.setCurrentIndex(1)
+        QApplication.processEvents()
+
+    def _close_busy(self):
+        self._stack.setCurrentIndex(0)
+        self._cancellable_thread = None
+
+    def _update_busy_message(self, message):
+        if self._stack.currentIndex() == 1:
+            self._busy_message.setText(message)
+            QApplication.processEvents()
+
+    def _update_busy_progress(self, value, total=None):
+        if self._stack.currentIndex() == 1:
+            if total is not None and total > 0:
+                self._busy_progress.setRange(0, total)
+                self._busy_progress.setValue(value)
+                self._busy_progress.setFormat(f"{value}/{total}")
+            else:
+                self._busy_progress.setRange(0, 0)
+                self._busy_progress.setFormat("処理中...")
+
+    def _on_busy_cancel(self):
+        thread = self._cancellable_thread
+        if thread and hasattr(thread, 'stop'):
+            thread.stop()
+            self._busy_cancel_btn.setEnabled(False)
+            self._busy_cancel_btn.setText("キャンセル中...")
+            self._busy_message.setText("キャンセルしています...")
+
     # --- Translation Helpers ---
     def _run_translation(self, items, confirm_message):
         if not self.current_mod_path: return
@@ -1352,26 +1521,18 @@ class MainWindow(QMainWindow):
             return
 
         # Start Thread
-        self.progress_bar.setRange(0, len(items))
-        self.progress_bar.setValue(0)
-        self.progress_bar.show()
-        self.stop_translation_btn.show()  # Show stop button
-        self.toolbar.setEnabled(False)
-        self.editor.setEnabled(False)
-        self.mod_list.setEnabled(False)
-
-        glossary_terms = self.glossary.get_terms()
-        parallel_count = settings.get("parallel_count", 3)
-        self.translation_errors = [] # Reset errors
+        self.translation_errors = []
         self.translation_total_items = len(items)
         self.translation_original_items = items.copy()
         self._partial_saved_keys = set()
+
+        glossary_terms = self.glossary.get_terms()
+        parallel_count = settings.get("parallel_count", 3)
 
         mod_name = None
         if self.current_mod_path and self.current_mod_path in self.loaded_mods:
             mod_name = self.loaded_mods[self.current_mod_path].get("name")
         
-        # Create translator thread with memory for progressive saving
         self.translator_thread = TranslatorThread(
             items, api_key, model, glossary_terms, parallel_count,
             memory=self.memory, mod_name=mod_name,
@@ -1384,45 +1545,43 @@ class MainWindow(QMainWindow):
         self.translator_thread.partial_save.connect(self.on_partial_save)
         self.translator_thread.validation_finished.connect(self.on_validation_finished)
         self.translator_thread.start()
-        
-        # Show immediate feedback
+
+        self.progress_bar.setRange(0, len(items))
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.stop_translation_btn.show()
+        self._show_busy("翻訳中", f"翻訳中... 0/{len(items)}", cancellable_thread=self.translator_thread)
         self.statusBar().showMessage(f"翻訳中... 0/{len(items)} (APIリクエスト中...)")
-        QApplication.processEvents()
 
     def on_translation_progress(self, value, total=None):
         self.progress_bar.setValue(value)
+        self._update_busy_progress(value, self.translation_total_items)
+        self._update_busy_message(f"翻訳中... {value}/{self.translation_total_items}")
         self.statusBar().showMessage(f"翻訳中... {value}/{self.translation_total_items}")
-        QApplication.processEvents()
 
     def on_translation_error(self, message):
         self.translation_errors.append(message)
 
     def stop_translation(self):
-        """Stop the current translation process."""
         if hasattr(self, 'translator_thread') and self.translator_thread and self.translator_thread.isRunning():
             self.translator_thread.stop()
             self.stop_translation_btn.setEnabled(False)
             self.stop_translation_btn.setText("中断中...")
+            self._update_busy_message("翻訳を中断しています...")
             self.statusBar().showMessage("翻訳を中断しています...")
 
     def on_translate_stopped(self, partial_results):
-        """Handle translation stopped with partial results."""
-        # Apply partial results to editor
         if partial_results:
             self.editor.update_translations(partial_results)
-            
-            # Update memory immediately
+                
             if self.current_mod_path:
                 self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
 
-        # Reset UI
         self.progress_bar.hide()
         self.stop_translation_btn.hide()
         self.stop_translation_btn.setEnabled(True)
         self.stop_translation_btn.setText("中断")
-        self.toolbar.setEnabled(True)
-        self.editor.setEnabled(True)
-        self.mod_list.setEnabled(True)
+        self._close_busy()
         
         # Show message
         if partial_results:
@@ -1623,7 +1782,6 @@ class MainWindow(QMainWindow):
         self._run_batch_translation(all_items)
 
     def _run_batch_translation(self, items):
-        """Run translation for batch MOD translation."""
         settings = self.settings_dialog.get_settings()
         api_key = settings["api_key"]
         model = settings["model"]
@@ -1633,22 +1791,13 @@ class MainWindow(QMainWindow):
             self.settings_dialog.show()
             return
 
-        # Start Thread
-        self.progress_bar.setRange(0, len(items))
-        self.progress_bar.setValue(0)
-        self.progress_bar.show()
-        self.stop_translation_btn.show()  # Show stop button
-        self.toolbar.setEnabled(False)
-        self.editor.setEnabled(False)
-        self.mod_list.setEnabled(False)
-        self.batch_translate_btn.setEnabled(False)
-
-        glossary_terms = self.glossary.get_terms()
-        parallel_count = settings.get("parallel_count", 3)
         self.translation_errors = []
         self.translation_total_items = len(items)
         self.translation_original_items = items.copy()
         self._partial_saved_keys = set()
+        
+        glossary_terms = self.glossary.get_terms()
+        parallel_count = settings.get("parallel_count", 3)
         
         self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms, parallel_count,
                                                    memory=self.memory, mod_name="(batch)",
@@ -1660,10 +1809,13 @@ class MainWindow(QMainWindow):
         self.translator_thread.partial_save.connect(self._on_batch_partial_save)
         self.translator_thread.validation_finished.connect(self.on_validation_finished)
         self.translator_thread.start()
-        
-        # Show immediate feedback
-        self.statusBar().showMessage(f"翻訳中... 0/{len(items)} (APIリクエスト中...)")
-        QApplication.processEvents()
+
+        self.progress_bar.setRange(0, len(items))
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.stop_translation_btn.show()
+        self._show_busy("一括翻訳中", f"一括翻訳中... 0/{len(items)}", cancellable_thread=self.translator_thread)
+        self.statusBar().showMessage(f"一括翻訳中... 0/{len(items)} (APIリクエスト中...)")
 
     def _on_batch_partial_save(self, partial_results):
         if not partial_results or not hasattr(self, '_batch_translate_mod_paths') or not self._batch_translate_mod_paths:
@@ -1687,8 +1839,6 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"一括翻訳自動保存: {saved_count} 件保存済み", 3000)
 
     def _on_batch_translate_finished(self, results):
-        """Handle batch translation completion."""
-        # Distribute results back to each MOD
         for mod_path in self._batch_translate_mod_paths:
             mod_data = self.loaded_mods[mod_path]
             original = mod_data["original"]
@@ -1697,17 +1847,13 @@ class MainWindow(QMainWindow):
                 if key in results:
                     mod_data["translations"][key] = results[key]
         
-        # Update current editor if it's one of the translated MODs
         if self.current_mod_path in self._batch_translate_mod_paths:
             self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
         
         self.progress_bar.hide()
-        self.stop_translation_btn.hide()  # Hide stop button
-        self.toolbar.setEnabled(True)
-        self.editor.setEnabled(True)
-        self.mod_list.setEnabled(True)
-        self.batch_translate_btn.setEnabled(True)
-        self.statusBar().showMessage("一括翻訳完了", 3000)  # Clear "translating" message
+        self.stop_translation_btn.hide()
+        self._close_busy()
+        self.statusBar().showMessage("一括翻訳完了", 3000)
         
         self.refresh_all_mod_colors()
         
@@ -1732,8 +1878,6 @@ class MainWindow(QMainWindow):
         self.translation_original_items = None
 
     def _on_batch_translate_stopped(self, partial_results):
-        """Handle batch translation stopped with partial results."""
-        # Distribute partial results back to each MOD
         if partial_results and hasattr(self, '_batch_translate_mod_paths') and self._batch_translate_mod_paths:
             for mod_path in self._batch_translate_mod_paths:
                 mod_data = self.loaded_mods[mod_path]
@@ -1743,19 +1887,14 @@ class MainWindow(QMainWindow):
                     if key in partial_results:
                         mod_data["translations"][key] = partial_results[key]
             
-            # Update current editor if it's one of the translated MODs
             if self.current_mod_path in self._batch_translate_mod_paths:
                 self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
 
-        # Reset UI
         self.progress_bar.hide()
         self.stop_translation_btn.hide()
         self.stop_translation_btn.setEnabled(True)
         self.stop_translation_btn.setText("中断")
-        self.toolbar.setEnabled(True)
-        self.editor.setEnabled(True)
-        self.mod_list.setEnabled(True)
-        self.batch_translate_btn.setEnabled(True)
+        self._close_busy()
         
         self.refresh_all_mod_colors()
         
@@ -1945,9 +2084,7 @@ class MainWindow(QMainWindow):
 
         self.progress_bar.hide()
         self.stop_translation_btn.hide()
-        self.toolbar.setEnabled(True)
-        self.editor.setEnabled(True)
-        self.mod_list.setEnabled(True)
+        self._close_busy()
         
         result_count = len(results)
         auto_saved = len(self._partial_saved_keys) if hasattr(self, '_partial_saved_keys') else 0
@@ -2049,7 +2186,6 @@ class MainWindow(QMainWindow):
             self._start_ai_term_extraction_custom(original_items, translated_items)
 
     def _start_ai_term_extraction_custom(self, original_items, translated_items):
-        """Start AI extraction with specific items."""
         settings = self.settings_dialog.get_settings()
         api_key = settings.get("api_key")
         
@@ -2058,11 +2194,10 @@ class MainWindow(QMainWindow):
             return
         
         self.statusBar().showMessage(f"AIで辞書を作成中... (対象: {len(original_items)} 項目)")
-        self.toolbar.setEnabled(False)
+        self._show_busy("AI辞書作成", f"AIで辞書を作成中... (対象: {len(original_items)} 項目)", show_cancel=False)
         
         existing_glossary = self.glossary.get_terms()
         
-        # Use DeepSeek
         self.ai_extractor_thread = AITermExtractorThread(
             original_items,
             translated_items,
@@ -2072,7 +2207,7 @@ class MainWindow(QMainWindow):
         )
         self.ai_extractor_thread.finished.connect(self._on_ai_extraction_finished)
         self.ai_extractor_thread.error.connect(self._on_ai_extraction_error)
-        self.ai_extractor_thread.progress.connect(lambda msg: self.statusBar().showMessage(msg))
+        self.ai_extractor_thread.progress.connect(self._on_ai_extraction_progress)
         self.ai_extractor_thread.start()
     
     def _show_local_term_suggestion(self, translated_items):
@@ -2117,7 +2252,6 @@ class MainWindow(QMainWindow):
             self._start_ai_term_extraction(translated_items)
     
     def _start_ai_term_extraction(self, translated_items):
-        """Start AI-based term extraction in background."""
         settings = self.settings_dialog.get_settings()
         api_key = settings.get("api_key")
         
@@ -2126,11 +2260,10 @@ class MainWindow(QMainWindow):
             return
         
         self.statusBar().showMessage("AIで辞書を作成中...")
-        self.toolbar.setEnabled(False)
+        self._show_busy("AI辞書作成", "AIで辞書を作成中...", show_cancel=False)
         
         existing_glossary = self.glossary.get_terms()
         
-        # Use DeepSeek by default (cheap and fast)
         self.ai_extractor_thread = AITermExtractorThread(
             self.translation_original_items,
             translated_items,
@@ -2140,12 +2273,15 @@ class MainWindow(QMainWindow):
         )
         self.ai_extractor_thread.finished.connect(self._on_ai_extraction_finished)
         self.ai_extractor_thread.error.connect(self._on_ai_extraction_error)
-        self.ai_extractor_thread.progress.connect(lambda msg: self.statusBar().showMessage(msg))
+        self.ai_extractor_thread.progress.connect(self._on_ai_extraction_progress)
         self.ai_extractor_thread.start()
     
+    def _on_ai_extraction_progress(self, msg):
+        self.statusBar().showMessage(msg)
+        self._update_busy_message(msg)
+
     def _on_ai_extraction_finished(self, extracted_terms):
-        """Handle AI extraction completion."""
-        self.toolbar.setEnabled(True)
+        self._close_busy()
         self.ai_extractor_thread = None
         
         if not extracted_terms:
@@ -2164,8 +2300,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("辞書作成をスキップしました", 3000)
     
     def _on_ai_extraction_error(self, error_msg):
-        """Handle AI extraction error."""
-        self.toolbar.setEnabled(True)
+        self._close_busy()
         self.ai_extractor_thread = None
         self.statusBar().showMessage("辞書作成に失敗しました", 3000)
         QMessageBox.warning(self, "AI辞書作成エラー", f"辞書作成中にエラーが発生しました:\n{error_msg}")
@@ -2222,6 +2357,8 @@ class MainWindow(QMainWindow):
         
         if parent_dir:
             try:
+                self._show_busy("リソースパック作成", "リソースパックを作成中...", show_cancel=False)
+
                 is_existing_pack = (os.path.exists(os.path.join(parent_dir, "pack.mcmeta")) or
                                     os.path.exists(os.path.join(parent_dir, "assets")))
 
@@ -2231,9 +2368,11 @@ class MainWindow(QMainWindow):
                     save_path = os.path.join(parent_dir, default_folder_name)
 
                     if os.path.exists(save_path):
+                        self._close_busy()
                         confirm = QMessageBox.question(self, "上書き確認", f"フォルダ '{default_folder_name}' は既に存在します。\n上書きしますか？")
                         if confirm != QMessageBox.Yes:
                             return
+                        self._show_busy("リソースパック作成", "リソースパックを作成中...", show_cancel=False)
 
                 current_translations = self.editor.get_translations()
 
@@ -2257,8 +2396,10 @@ class MainWindow(QMainWindow):
                 
                 self.memory.update(current_translations)
                 
+                self._close_busy()
                 QMessageBox.information(self, "成功", f"リソースパックを保存しました:\n{save_path}")
             except Exception as e:
+                self._close_busy()
                 QMessageBox.critical(self, "エラー", f"保存に失敗しました:\n{e}")
 
     def _export_merged(self):
@@ -2271,6 +2412,7 @@ class MainWindow(QMainWindow):
             return
         
         try:
+            self._show_busy("リソースパック作成", "リソースパックを作成中...", show_cancel=False)
             settings = self.settings_dialog.get_settings()
             target_lang = settings.get("target_lang", "ja_jp")
             pack_format = settings.get("pack_format", 15)
@@ -2366,14 +2508,17 @@ class MainWindow(QMainWindow):
                     msg += f"\nFTBクエスト: {ftb_count} 件"
                 if dp_count > 0:
                     msg += f"\nデータパック: {dp_count} 件"
+                self._close_busy()
                 QMessageBox.information(self, "成功", msg)
             else:
                 save_path = os.path.join(parent_dir, default_folder_name)
                 
                 if os.path.exists(save_path):
+                    self._close_busy()
                     confirm = QMessageBox.question(self, "上書き確認", f"フォルダ '{default_folder_name}' は既に存在します。\n上書きしますか？")
                     if confirm != QMessageBox.Yes:
                         return
+                    self._show_busy("リソースパック作成", "リソースパックを作成中...", show_cancel=False)
                 
                 mod_data_list = list(self.loaded_mods.values())
                 
@@ -2424,8 +2569,10 @@ class MainWindow(QMainWindow):
                     msg += f"\n(FTBクエスト {len(ftb_mods)} 件の言語ファイルを含む)"
                 if dp_mods:
                     msg += f"\n(データパック {len(dp_mods)} 件の言語ファイルを含む)"
+                self._close_busy()
                 QMessageBox.information(self, "成功", msg)
         except Exception as e:
+            self._close_busy()
             QMessageBox.critical(self, "エラー", f"保存に失敗しました:\n{e}")
 
     def apply_ftbquest_snbt(self):
@@ -2454,6 +2601,7 @@ class MainWindow(QMainWindow):
             return
         
         try:
+            self._show_busy("SNBT適用", "SNBTファイルを変換中...", show_cancel=False)
             total_converted = 0
             total_backups = 0
             
@@ -2473,12 +2621,14 @@ class MainWindow(QMainWindow):
             # Update button style (remove warning)
             self._update_snbt_button_style()
             
+            self._close_busy()
             QMessageBox.information(
                 self, "SNBT適用完了",
                 f"{total_converted} 個のSNBTファイルを変換しました。\n"
                 f"{total_backups} 個のバックアップを作成しました。"
             )
         except Exception as e:
+            self._close_busy()
             QMessageBox.critical(self, "エラー", f"SNBT適用に失敗しました:\n{e}")
 
     def import_resource_pack(self):
