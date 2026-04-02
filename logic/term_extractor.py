@@ -1,4 +1,5 @@
 import re
+import time
 from collections import defaultdict, Counter
 import requests
 import json
@@ -524,6 +525,124 @@ def _extract_term_from_key(key):
     if words <= _COMMON_WORDS or words <= _SKIP_TERMS_LOWER:
         return None
     return readable if len(readable) >= 3 else None
+
+
+class AITermClassifierThread(QThread):
+    """AIで候補リストを仕分けし、Minecraft固有名詞として翻訳すべきものを抽出する。"""
+
+    finished = Signal(dict)
+    error = Signal(str)
+    progress = Signal(str)
+
+    def __init__(self, candidates, api_key, model=None, batch_size=80):
+        """
+        Args:
+            candidates: list[tuple[str, int, list[str]]] — (term, count, sample_keys)
+            api_key: OpenRouter API key
+            model: 使用モデル (default: DeepSeek)
+            batch_size: 1バッチあたりの候補数
+        """
+        super().__init__()
+        self.candidates = candidates
+        self.api_key = api_key
+        self.model = model or "deepseek/deepseek-chat"
+        self.batch_size = batch_size
+        self.is_running = True
+
+    def run(self):
+        try:
+            self.progress.emit("AI仕分けを準備中...")
+
+            all_classified = {}
+            total = len(self.candidates)
+            total_batches = (total + self.batch_size - 1) // self.batch_size
+
+            for i in range(0, total, self.batch_size):
+                if not self.is_running:
+                    break
+
+                batch = self.candidates[i:i + self.batch_size]
+                batch_num = i // self.batch_size + 1
+                self.progress.emit(f"AI仕分け中... ({batch_num}/{total_batches})")
+
+                try:
+                    result = self._classify_batch(batch)
+                    all_classified.update(result)
+                except Exception as e:
+                    print(f"Classification batch {batch_num} failed: {e}")
+
+                time.sleep(0.5)
+
+            self.finished.emit(all_classified)
+
+        except Exception as e:
+            self.error.emit(str(e))
+
+    def _classify_batch(self, batch):
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "X-Title": "Minecraft MOD Translator - Term Classification"
+        }
+
+        candidates_text = "\n".join(
+            f"- {term} (出現{count}回)" for term, count, _ in batch
+        )
+
+        system_prompt = (
+            "あなたはMinecraft MODの翻訳アシスタントです。\n"
+            "与えられた英語の語句リストのうち、Minecraft MODの文脈で**固有名詞**"
+            "（アイテム名、Mob名、ボス名、バイオーム名、ディメンション名、"
+            "スキル名、クラス名、ストーリー固有名詞など）として翻訳すべきものだけを抽出してください。\n\n"
+            "**除外するもの:**\n"
+            "- 一般的な英単語やフレーズ (\"Blue\", \"Level\", \"Damage\" 等)\n"
+            "- UI ラベルや汎用メッセージ (\"Click to\", \"Requires\" 等)\n"
+            "- MOD名そのもの\n"
+            "- 技術的な識別子\n"
+            "- 文脈なしでは固有名詞と判断できない短い単語\n\n"
+            "出力形式: JSONオブジェクトのみ（キー: 英語原文、値: 日本語訳）\n"
+            "マークダウンコードブロックは使わない。\n"
+            "固有名詞でないものは出力に含めない。"
+        )
+
+        user_prompt = (
+            f"以下の語句リストから、Minecraft MODの固有名詞として翻訳すべきものだけを抽出し、"
+            f"日本語訳を付けてください:\n\n{candidates_text}"
+        )
+
+        data = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.1,
+        }
+
+        response = requests.post(url, headers=headers, json=data, timeout=60)
+        response.raise_for_status()
+
+        content = response.json()['choices'][0]['message']['content'].strip()
+
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+            return {}
+
+    def stop(self):
+        self.is_running = False
 
 
 def extract_consistent_terms(original_items, translated_items, existing_glossary=None):

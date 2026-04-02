@@ -8,6 +8,7 @@ from PySide6.QtGui import QColor, QAction
 import json
 import requests
 
+from logic.term_extractor import AITermClassifierThread
 
 _INCONSISTENT_BG = QColor(255, 255, 210)
 
@@ -323,6 +324,7 @@ class FrequentTermDialog(QDialog):
         self._api_key = api_key
         self._freq_model = freq_model
         self._translate_thread = None
+        self._classifier_thread = None
         self._initial_translations = initial_translations or {}
 
         self.setWindowTitle("頻出固有名詞の抽出結果（翻訳前）")
@@ -414,6 +416,25 @@ class FrequentTermDialog(QDialog):
         deselect_all_btn.clicked.connect(self._deselect_all)
         select_layout.addWidget(deselect_all_btn)
 
+        self.show_all_btn = QPushButton("すべて表示")
+        self.show_all_btn.setToolTip("仕分けで非表示になった項目も含め、全項目を表示します")
+        self.show_all_btn.clicked.connect(self._show_all_rows)
+        select_layout.addWidget(self.show_all_btn)
+
+        self.ai_classify_btn = QPushButton("AI仕分け")
+        self.ai_classify_btn.setToolTip("AIで固有名詞を自動仕分けし、チェック・訳文を設定します")
+        self.ai_classify_btn.clicked.connect(self._start_ai_classify)
+        if not self._api_key or not self._freq_model:
+            self.ai_classify_btn.setEnabled(False)
+            self.ai_classify_btn.setToolTip("API設定が必要です")
+        select_layout.addWidget(self.ai_classify_btn)
+
+        self.stop_classify_btn = QPushButton("仕分け停止")
+        self.stop_classify_btn.setToolTip("AI仕分けを中止します")
+        self.stop_classify_btn.clicked.connect(self._stop_ai_classify)
+        self.stop_classify_btn.setEnabled(False)
+        select_layout.addWidget(self.stop_classify_btn)
+
         select_layout.addStretch()
 
         self.ai_translate_btn = QPushButton("AI翻訳")
@@ -470,6 +491,90 @@ class FrequentTermDialog(QDialog):
             self._translate_thread.stop()
             self._translate_thread.wait(3000)
             self._translate_thread = None
+
+    def _cleanup_classifier(self):
+        if self._classifier_thread is not None:
+            self._classifier_thread.stop()
+            self._classifier_thread.wait(3000)
+            self._classifier_thread = None
+
+    def _show_all_rows(self):
+        for row in range(self.table.rowCount()):
+            self.table.setRowHidden(row, False)
+
+    def _start_ai_classify(self):
+        if not self._api_key or not self._freq_model:
+            QMessageBox.warning(self, "エラー", "API設定が必要です。")
+            return
+
+        self.ai_classify_btn.setEnabled(False)
+        self.stop_classify_btn.setEnabled(True)
+        self.ai_translate_btn.setEnabled(False)
+
+        self._classifier_thread = AITermClassifierThread(
+            self._frequent_terms, self._api_key, self._freq_model
+        )
+        self._classifier_thread.finished.connect(self._on_classify_finished)
+        self._classifier_thread.error.connect(self._on_classify_error)
+        self._classifier_thread.progress.connect(
+            lambda msg: self.ai_classify_btn.setText(msg)
+        )
+        self._classifier_thread.start()
+
+    def _stop_ai_classify(self):
+        self._cleanup_classifier()
+        self.ai_classify_btn.setEnabled(True)
+        self.ai_classify_btn.setText("AI仕分け")
+        self.stop_classify_btn.setEnabled(False)
+        self.ai_translate_btn.setEnabled(bool(self._api_key and self._freq_model))
+
+    def _on_classify_finished(self, classified):
+        self.ai_classify_btn.setEnabled(True)
+        self.ai_classify_btn.setText("AI仕分け")
+        self.stop_classify_btn.setEnabled(False)
+        self.ai_translate_btn.setEnabled(bool(self._api_key and self._freq_model))
+        self._cleanup_classifier()
+
+        classified_lower = {k.lower(): (k, v) for k, v in classified.items()}
+        visible_count = 0
+        for row in range(self.table.rowCount()):
+            orig_item = self.table.item(row, 1)
+            if not orig_item:
+                self.table.setRowHidden(row, True)
+                continue
+            orig = orig_item.text().strip()
+            match = classified_lower.get(orig.lower())
+            if match:
+                widget = self.table.cellWidget(row, 0)
+                if widget:
+                    checkbox = widget.findChild(QCheckBox)
+                    if checkbox:
+                        checkbox.setChecked(True)
+                trans_item = self.table.item(row, 2)
+                if trans_item and not trans_item.text().strip():
+                    trans_item.setText(match[1])
+                self.table.setRowHidden(row, False)
+                visible_count += 1
+            else:
+                self.table.setRowHidden(row, True)
+
+        if visible_count > 0:
+            QMessageBox.information(
+                self, "仕分け完了",
+                f"AI仕分け完了: {visible_count} 件を固有名詞として抽出しました。\n"
+                "内容を確認してください。\n"
+                "「すべて表示」で元のリストに戻せます。"
+            )
+        else:
+            QMessageBox.information(self, "情報", "固有名詞として判定された項目がありませんでした。")
+
+    def _on_classify_error(self, error_msg):
+        self.ai_classify_btn.setEnabled(True)
+        self.ai_classify_btn.setText("AI仕分け")
+        self.stop_classify_btn.setEnabled(False)
+        self.ai_translate_btn.setEnabled(bool(self._api_key and self._freq_model))
+        self._cleanup_classifier()
+        QMessageBox.warning(self, "エラー", f"AI仕分けに失敗しました:\n{error_msg}")
 
     def _start_ai_translate(self):
         terms_to_translate = []
@@ -671,10 +776,12 @@ class FrequentTermDialog(QDialog):
             self.selected_terms = selected
 
         self._cleanup_thread()
+        self._cleanup_classifier()
         self.accept()
 
     def reject(self):
         self._cleanup_thread()
+        self._cleanup_classifier()
         super().reject()
 
     def get_added_count(self):
