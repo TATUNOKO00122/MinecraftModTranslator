@@ -67,6 +67,8 @@ VARIABLE_PATTERNS = [
 
 COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in VARIABLE_PATTERNS]
 
+MAX_GLOSSARY_TERMS = 40
+
 NUMBER_PATTERN = re.compile(r'\b\d+(?:[.,]\d+)*\b')
 
 CJK_PATTERN = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF]')
@@ -650,10 +652,18 @@ class TranslatorThread(QThread):
             batch_text_clean = batch_text.lower()
             for pat in COMPILED_PATTERNS:
                 batch_text_clean = pat.sub(' ', batch_text_clean)
-            relevant_terms = {}
+            lower_to_original = {}
             for k, v in self.glossary.items():
-                if re.search(r'\b' + re.escape(k.lower()) + r'\b', batch_text_clean):
-                    relevant_terms[k] = v
+                lower_to_original.setdefault(k.lower(), (k, v))
+            scored = []
+            for kl, (k, v) in lower_to_original.items():
+                escaped = re.escape(kl)
+                pattern = r'(?<!\w)' + escaped + r'(?!\w)'
+                matches = re.findall(pattern, batch_text_clean)
+                if matches:
+                    scored.append((len(matches), k, v))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            relevant_terms = {k: v for _, k, v in scored[:MAX_GLOSSARY_TERMS]}
             
             if relevant_terms:
                 glossary_text = "\n".join([f"- {k}: {v}" for k, v in relevant_terms.items()])
