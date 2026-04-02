@@ -234,7 +234,7 @@ def _recover_partial_json(content):
     return recovered
 
 
-def validate_translation(original, translated):
+def validate_translation(original, translated, glossary=None):
     """
     Validate that translation doesn't have issues.
     Returns (is_valid, list_of_issues)
@@ -271,17 +271,29 @@ def validate_translation(original, translated):
     
     if len(original) > 10:
         ratio = len(translated) / len(original)
-        if ratio > 4:
+        if ratio > 5:
             issues.append(f"Translation is {ratio:.1f}x longer than original")
-        elif ratio < 0.25:
+        elif ratio < 0.2:
             issues.append(f"Translation is {ratio:.1f}x shorter than original")
     
-    ascii_ratio_original = sum(1 for c in original if ord(c) < 128) / max(len(original), 1)
-    ascii_ratio_translated = sum(1 for c in translated if ord(c) < 128) / max(len(translated), 1)
+    ascii_chars_translated = sum(1 for c in translated if ord(c) < 128)
+    ascii_ratio_translated = ascii_chars_translated / max(len(translated), 1)
+    non_latin_japanese = sum(1 for c in translated if '\u3040' <= c <= '\u309F'
+                             or '\u30A0' <= c <= '\u30FF'
+                             or '\u4E00' <= c <= '\u9FFF')
     
-    if ascii_ratio_original > 0.8 and ascii_ratio_translated > 0.9 and len(translated) > 20:
-        if re.search(r'[A-Za-z]{4,}', translated):
-            issues.append(f"May be untranslated (high ASCII ratio): {translated[:30]}...")
+    if ascii_ratio_translated > 0.85 and len(translated) > 15 and non_latin_japanese < 3:
+        long_english_words = re.findall(r'[A-Za-z]{5,}', translated)
+        if long_english_words:
+            issues.append(f"May be untranslated (high ASCII, no Japanese): {translated[:30]}...")
+    
+    if glossary:
+        original_lower = original.lower()
+        for en_term, ja_term in glossary.items():
+            en_lower = en_term.lower()
+            if re.search(r'\b' + re.escape(en_lower) + r'\b', original_lower):
+                if ja_term not in translated and en_lower not in translated.lower():
+                    issues.append(f"Glossary term missing: '{en_term}' → expected '{ja_term}'")
     
     return len(issues) == 0, issues
 
@@ -740,14 +752,14 @@ class TranslatorThread(QThread):
                 if '__VAR_' in restored_text:
                     restored_text = _fuzzy_restore(restored_text, variable_map[key])
                 
-                is_valid, issues = validate_translation(unique_items.get(key, ''), restored_text)
+                is_valid, issues = validate_translation(unique_items.get(key, ''), restored_text, self.glossary)
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
                     validation_results[key] = {"issues": issues, "reviewed": False}
                 
                 unique_results[key] = restored_text
             else:
-                is_valid, issues = validate_translation(unique_items.get(key, ''), translated_text)
+                is_valid, issues = validate_translation(unique_items.get(key, ''), translated_text, self.glossary)
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
                     validation_results[key] = {"issues": issues, "reviewed": False}

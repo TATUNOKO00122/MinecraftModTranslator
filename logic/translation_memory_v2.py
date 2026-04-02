@@ -339,20 +339,22 @@ class TranslationMemoryV2:
         cursor = conn.cursor()
 
         search_words = list(batch_words | batch_stems)
-        top_words = sorted(search_words, key=len, reverse=True)[:20]
+        top_words = sorted(search_words, key=len, reverse=True)[:15]
         like_clauses = ' OR '.join(['source LIKE ?' for _ in top_words])
         like_params = [f'%{w}%' for w in top_words]
 
         if mod_name:
             query = (
                 f'SELECT source, translation FROM translations '
-                f'WHERE mod_name = ? AND source != "" AND ({like_clauses})'
+                f'WHERE mod_name = ? AND source != "" AND reviewed = 1 AND ({like_clauses}) '
+                f'LIMIT 200'
             )
             params = [mod_name] + like_params
         else:
             query = (
                 f'SELECT source, translation FROM translations '
-                f'WHERE source != "" AND ({like_clauses})'
+                f'WHERE source != "" AND reviewed = 1 AND ({like_clauses}) '
+                f'LIMIT 200'
             )
             params = like_params
 
@@ -363,13 +365,15 @@ class TranslationMemoryV2:
         if not candidates:
             return []
 
+        min_stem_count = max(2, len(batch_stems) // 3)
+
         scored = []
         for row in candidates:
             source = row['source'] or ''
             source_words = set(re.findall(r'[a-zA-Z]{3,}', source.lower())) - self._STOP_WORDS
             source_stems = {self._stem(w) for w in source_words}
             common_count = len(batch_stems & source_stems)
-            if common_count >= 1:
+            if common_count >= min_stem_count:
                 scored.append((common_count, source, row['translation']))
 
         if not scored:
