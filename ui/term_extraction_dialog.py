@@ -1,14 +1,71 @@
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTableWidget,
                                 QTableWidgetItem, QPushButton, QHeaderView, QLabel,
                                 QCheckBox, QWidget, QLineEdit, QRadioButton,
-                                QButtonGroup, QProgressBar, QMessageBox)
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QColor
+                                QButtonGroup, QProgressBar, QMessageBox, QMenu,
+                                QStyleOptionButton, QStyle, QAbstractItemView)
+from PySide6.QtCore import Qt, QThread, Signal, QRect
+from PySide6.QtGui import QColor, QPainter, QPen, QAction
 import json
 import requests
 
 
 _INCONSISTENT_BG = QColor(255, 255, 210)
+
+
+class CheckMarkCheckBox(QCheckBox):
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setStyleSheet(
+            "QCheckBox::indicator { width: 16px; height: 16px;"
+            " background: transparent; border: none; }"
+        )
+
+    def paintEvent(self, event):
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+
+        ind_rect = self.style().subElementRect(
+            QStyle.SubElement.SE_CheckBoxIndicator, opt, self
+        )
+        contents_rect = self.style().subElementRect(
+            QStyle.SubElement.SE_CheckBoxContents, opt, self
+        )
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        is_checked = self.isChecked()
+        border = QColor("#888888") if self.underMouse() else QColor("#666666")
+        if is_checked:
+            border = QColor("#007acc")
+
+        p.setPen(QPen(border, 1.5))
+        p.setBrush(QColor("#1e1e1e"))
+        p.drawRect(ind_rect)
+
+        if is_checked:
+            pen = QPen(border, 2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            r = ind_rect
+            m = max(3, int(r.width() * 0.2))
+            left = r.left() + m
+            mid_x = r.left() + int(r.width() * 0.4)
+            right = r.right() - m
+            top = r.top() + m
+            bottom = r.bottom() - m
+            mid_y = r.center().y() + 1
+            p.drawLine(left, mid_y, mid_x, bottom)
+            p.drawLine(mid_x, bottom, right, top)
+
+        text = self.text()
+        if text:
+            p.setPen(QColor("#d4d4d4"))
+            p.setFont(self.font())
+            p.drawText(contents_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
+
+        p.end()
 
 
 class TermExtractionDialog(QDialog):
@@ -78,7 +135,7 @@ class TermExtractionDialog(QDialog):
         self.table.setRowCount(len(self._row_data))
 
         for row, (orig, trans, is_inconsistent, info_text) in enumerate(self._row_data):
-            checkbox = QCheckBox()
+            checkbox = CheckMarkCheckBox()
             checkbox.setChecked(not is_inconsistent)
             checkbox_widget = QWidget()
             checkbox_widget.setStyleSheet("background: transparent;")
@@ -367,12 +424,15 @@ class FrequentTermDialog(QDialog):
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.setColumnWidth(0, 50)
         self.table.verticalHeader().setDefaultSectionSize(35)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         self.table.setRowCount(len(self._frequent_terms))
 
         for row, (term, count, sample_keys) in enumerate(self._frequent_terms):
-            checkbox = QCheckBox()
-            checkbox.setChecked(True)
+            checkbox = CheckMarkCheckBox()
+            checkbox.setChecked(False)
             checkbox_widget = QWidget()
             checkbox_widget.setStyleSheet("background: transparent;")
             cb_layout = QHBoxLayout(checkbox_widget)
@@ -551,6 +611,88 @@ class FrequentTermDialog(QDialog):
 
     def _deselect_all(self):
         self._set_visible_checkboxes(False)
+
+    def _show_context_menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        if row < 0:
+            return
+
+        selected_rows = set()
+        for item in self.table.selectedItems():
+            selected_rows.add(item.row())
+        if not selected_rows:
+            selected_rows.add(row)
+
+        menu = QMenu(self)
+
+        if len(selected_rows) == 1:
+            translate_action = QAction("この項目をAI翻訳", self)
+            translate_action.triggered.connect(lambda: self._translate_rows(list(selected_rows)))
+            menu.addAction(translate_action)
+        else:
+            translate_action = QAction(f"選択範囲をAI翻訳 ({len(selected_rows)}件)", self)
+            translate_action.triggered.connect(lambda: self._translate_rows(list(selected_rows)))
+            menu.addAction(translate_action)
+
+        menu.exec(self.table.mapToGlobal(pos))
+
+    def _translate_rows(self, rows):
+        if not self._api_key or not self._freq_model:
+            QMessageBox.warning(self, "エラー", "API設定が必要です。")
+            return
+
+        terms_to_translate = []
+        for row in rows:
+            trans_item = self.table.item(row, 2)
+            if trans_item and not trans_item.text().strip():
+                orig_item = self.table.item(row, 1)
+                if orig_item:
+                    terms_to_translate.append(orig_item.text().strip())
+
+        if not terms_to_translate:
+            QMessageBox.information(self, "情報", "訳文が空の項目がありません。")
+            return
+
+        self.ai_translate_btn.setEnabled(False)
+        self.stop_translate_btn.setEnabled(True)
+
+        self._translate_thread = FrequentTermTranslateThread(
+            terms_to_translate, self._api_key, self._freq_model
+        )
+        self._translate_thread.finished.connect(
+            lambda t: self._apply_translations_to_rows(t, rows)
+        )
+        self._translate_thread.error.connect(self._on_translate_error)
+        self._translate_thread.progress.connect(
+            lambda msg: self.ai_translate_btn.setText(msg)
+        )
+        self._translate_thread.start()
+
+    def _apply_translations_to_rows(self, translations, target_rows):
+        self.ai_translate_btn.setEnabled(True)
+        self.ai_translate_btn.setText("AI翻訳")
+        self.stop_translate_btn.setEnabled(False)
+        self._cleanup_thread()
+
+        applied = 0
+        for row in target_rows:
+            orig_item = self.table.item(row, 1)
+            trans_item = self.table.item(row, 2)
+            if not orig_item or not trans_item:
+                continue
+            orig = orig_item.text().strip()
+            if orig in translations and not trans_item.text().strip():
+                trans_item.setText(translations[orig])
+                applied += 1
+
+        if applied > 0:
+            QMessageBox.information(
+                self, "完了",
+                f"{applied} 件のAI翻訳を適用しました。\n"
+                "内容を確認してください。"
+            )
+        else:
+            QMessageBox.information(self, "情報", "適用可能な翻訳結果がありませんでした。")
 
     def _add_selected(self):
         selected = {}

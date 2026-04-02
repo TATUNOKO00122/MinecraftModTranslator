@@ -7,7 +7,7 @@ import zipfile
 import ctypes
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolBar, 
                                 QFileDialog, QMessageBox, QLabel, QProgressBar, QMenu, QSplitter, QListWidget, QApplication,
-                                QDialog, QDialogButtonBox, QListWidgetItem, QToolButton, QComboBox, QPushButton, QCheckBox,
+                                QDialog, QDialogButtonBox, QListWidgetItem, QToolButton, QComboBox, QPushButton,
                                 QStackedWidget, QFrame)
 from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut, QIcon, QColor
 from PySide6.QtCore import Qt, QTimer
@@ -21,7 +21,7 @@ from logic import datapack_handler
 from ui.editor_widget import EditorWidget
 from ui.settings_dialog import SettingsDialog
 from ui.glossary_dialog import GlossaryDialog
-from ui.term_extraction_dialog import TermExtractionDialog, FrequentTermDialog, FrequentTermTranslateThread
+from ui.term_extraction_dialog import TermExtractionDialog, FrequentTermDialog, FrequentTermTranslateThread, CheckMarkCheckBox
 from logic.term_extractor import AITermExtractorThread, extract_all_term_candidates, extract_frequent_terms_from_original
 from logic.resource_pack_handler import ResourcePackImportThread
 
@@ -1355,13 +1355,17 @@ class MainWindow(QMainWindow):
         self.rp_thread.error.connect(self.on_rp_import_error)
         self.rp_thread.start()
 
-    def on_rp_import_progress(self, current, total):
+    def on_rp_import_progress(self, current, total, phase="read"):
         if total > 0:
             self.progress_bar.setRange(0, total)
             self.progress_bar.setValue(current)
             self._update_busy_progress(current, total)
-            self._update_busy_message(f"リソースパックを読み込み中... ({current}/{total})")
-            self.statusBar().showMessage(f"リソースパックを読み込み中... ({current}/{total})")
+            if phase == "match":
+                self._update_busy_message(f"翻訳をマッチング中... ({current}/{total})")
+                self.statusBar().showMessage(f"翻訳をマッチング中... ({current}/{total})")
+            else:
+                self._update_busy_message(f"リソースパックを読み込み中... ({current}/{total})")
+                self.statusBar().showMessage(f"リソースパックを読み込み中... ({current}/{total})")
 
     def on_rp_import_finished(self, all_translations, applied_count, matched_mods):
         self.progress_bar.hide()
@@ -1926,7 +1930,7 @@ class MainWindow(QMainWindow):
         if not freq_model:
             freq_model = "deepseek/deepseek-chat"
 
-        Toggle = QCheckBox
+        Toggle = CheckMarkCheckBox
 
         dlg = QDialog(self)
         dlg.setWindowTitle("頻出語抽出")
@@ -1945,9 +1949,10 @@ class MainWindow(QMainWindow):
         dlg_layout.addSpacing(8)
 
         self._ft_translate_toggle = Toggle("AIで仮翻訳も同時に実行")
-        self._ft_translate_toggle.setChecked(True)
-        if not api_key or not freq_model:
-            self._ft_translate_toggle.setChecked(False)
+        self._ft_translate_toggle.setChecked(False)
+        if api_key and freq_model:
+            self._ft_translate_toggle.setEnabled(True)
+        else:
             self._ft_translate_toggle.setEnabled(False)
             self._ft_translate_toggle.setToolTip("API設定が必要です")
         dlg_layout.addWidget(self._ft_translate_toggle)
