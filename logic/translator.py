@@ -121,8 +121,6 @@ def protect_variables(text):
         for start, end, placeholder in reversed(replacements):
             result = result[:start] + placeholder + result[end:]
     
-    result, variables = _merge_adjacent_placeholders(result, variables)
-    
     return result, variables
 
 
@@ -141,27 +139,6 @@ def _protect_numbers(text, variables):
 
         result_parts.append(NUMBER_PATTERN.sub(replacer, part))
     return ''.join(result_parts), variables
-
-
-def _merge_adjacent_placeholders(text, variables):
-    """隣接する __VAR_N__ を単一プレースホルダに統合し、LLMによる順序入れ替えを防止する。"""
-    merged = []
-    var_ref = re.compile(r'__VAR_(\d+)__')
-    
-    def replacer(m):
-        parts = []
-        last_end = 0
-        full = m.group()
-        for vm in var_ref.finditer(full):
-            if vm.start() > last_end:
-                parts.append(full[last_end:vm.start()])
-            parts.append(variables[int(vm.group(1))])
-            last_end = vm.end()
-        merged.append(''.join(parts))
-        return f'__VAR_{len(merged) - 1}__'
-    
-    result = re.sub(r'__VAR_\d+__(?:\s*__VAR_\d+__)*', replacer, text)
-    return result, merged
 
 
 def restore_variables(text, variables):
