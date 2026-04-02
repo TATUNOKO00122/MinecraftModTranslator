@@ -2,6 +2,7 @@ import collections
 import json
 import re
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -71,6 +72,10 @@ MAX_GLOSSARY_TERMS = 40
 
 NUMBER_PATTERN = re.compile(r'\b\d+(?:[.,]\d+)*\b')
 
+PLACEHOLDER_RE = re.compile(r'⟨([0-9a-f]{12})⟩')
+PLACEHOLDER_LEN = 14
+
+
 CJK_PATTERN = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF]')
 
 NOTRANSLATE_PATTERNS = [
@@ -100,85 +105,93 @@ def should_skip_translation(text, target_lang="ja_jp"):
 
 def protect_variables(text):
     """
-    Replace variables/format codes with placeholders before translation.
-    Returns (protected_text, list_of_original_variables)
+    Replace variables/format codes with UUID-based placeholders before translation.
+    Returns (protected_text, list_of_original_variables, tag_to_index dict)
     """
     if not text or not isinstance(text, str):
-        return text, []
-    
+        return text, [], {}
+
     variables = []
+    tag_to_index = {}
     result = text
-    
+
     for pattern in COMPILED_PATTERNS:
         matches = list(pattern.finditer(result))
         if not matches:
             continue
-        
+
         replacements = []
         for match in matches:
-            placeholder = f"__VAR_{len(variables)}__"
+            tag = uuid.uuid4().hex[:12]
+            idx = len(variables)
             variables.append(match.group())
+            tag_to_index[tag] = idx
+            placeholder = f'⟨{tag}⟩'
             replacements.append((match.start(), match.end(), placeholder))
-        
+
         for start, end, placeholder in reversed(replacements):
             result = result[:start] + placeholder + result[end:]
-    
-    return result, variables
+
+    return result, variables, tag_to_index
 
 
-def _protect_numbers(text, variables):
+def _protect_numbers(text, variables, tag_to_index):
     """変数パターン置換後のテキストから、プレースホルダ以外の数値を保護する。"""
-    parts = re.split(r'(__VAR_\d+__)', text)
+    parts = PLACEHOLDER_RE.split(text)
     result_parts = []
     for part in parts:
-        if part.startswith('__VAR_'):
+        if PLACEHOLDER_RE.fullmatch(part):
             result_parts.append(part)
             continue
 
         def replacer(match):
+            tag = uuid.uuid4().hex[:12]
+            idx = len(variables)
             variables.append(match.group())
-            return f"__VAR_{len(variables) - 1}__"
+            tag_to_index[tag] = idx
+            return f'⟨{tag}⟩'
 
         result_parts.append(NUMBER_PATTERN.sub(replacer, part))
     return ''.join(result_parts), variables
 
 
-def restore_variables(text, variables):
+def restore_variables(text, variables, tag_to_index):
     """
-    Restore original variables from placeholders after translation.
+    Restore original variables from UUID-based placeholders after translation.
+    Returns (restored_text, unrestored_tags).
+    unrestored_tags is empty on success, or contains tags that were lost/altered.
     """
     if not text or not isinstance(text, str) or not variables:
-        return text
-    
-    result = text
-    for i, var in enumerate(variables):
-        placeholder = f"__VAR_{i}__"
-        result = result.replace(placeholder, var)
-    
-    return result
+        return text, []
 
+    unrestored = []
+    found_raw = []
 
-def _fuzzy_restore(text, variables):
-    """AIがプレースホルダを改変した場合のフォールバック復元。"""
-    for i, var in enumerate(variables):
-        placeholder = f"__VAR_{i}__"
-        if placeholder in text:
-            continue
-        candidates = [
-            placeholder.replace('_', '-'),
-            placeholder.replace('__', '**'),
-            placeholder.replace('__', '``'),
-            f"[VAR_{i}]",
-            f"{{VAR_{i}}}",
-            f"VAR_{i}",
-        ]
-        for candidate in candidates:
-            if candidate in text:
-                text = text.replace(candidate, var, 1)
-                break
-    if '__VAR_' in text:
-        print(f"Warning: Unrestored placeholders remain: {text[:80]}...")
-    return text
+    def replace_one(match):
+        tag = match.group(1)
+        found_raw.append(tag)
+        idx = tag_to_index.get(tag)
+        if idx is not None and idx < len(variables):
+            return variables[idx]
+        unrestored.append(match.group(0))
+        return match.group(0)
+
+    result = PLACEHOLDER_RE.sub(replace_one, text)
+
+    expected_tags = set(tag_to_index.keys())
+    found_tags = set(found_raw)
+    missing_tags = expected_tags - found_tags
+    for tag in missing_tags:
+        unrestored.append(f'⟨{tag}⟩')
+
+    dup_check = collections.Counter(found_raw)
+    for tag, count in dup_check.items():
+        expected = 1
+        if count > expected:
+            unrestored.append(f'⟨{tag}⟩(x{count})')
+
+    return result, unrestored
+
 
 
 def extract_tags(text):
@@ -240,7 +253,7 @@ def validate_translation(original, translated, glossary=None):
         if re.search(pattern, translated):
             issues.append(f"{desc} detected in: {translated[:50]}...")
     
-    if '__VAR_' in translated:
+    if PLACEHOLDER_RE.search(translated):
         issues.append(f"Unreplaced placeholder in: {translated[:50]}...")
     
     original_placeholders = len(re.findall(r'\{[^}]+\}|%[0-9]*\$?[sdf]', original))
@@ -336,9 +349,9 @@ class TranslatorThread(QThread):
             f"You will receive a JSON object. The keys are identifiers (DO NOT CHANGE KEYS). The values are the English text to translate.\n\n"
             f"=== FORMAT RULES ===\n"
             f"1. Translate the value of each key from English to {lang_english}.\n"
-            f"2. CRITICAL: Keep ALL placeholders like __VAR_0__, __VAR_1__ EXACTLY as they are. DO NOT modify, translate, or remove them.\n"
-            f"3. CRITICAL: When multiple __VAR_N__ placeholders appear near each other, "
-            f"you MUST keep their original left-to-right order. Do not swap or reorder adjacent placeholders.\n"
+            f"2. CRITICAL: Keep ALL tokens enclosed in ⟨⟩ brackets EXACTLY as they are (e.g. ⟨a1b2c3d4e5f6⟩). DO NOT modify, translate, remove, or reorder them.\n"
+            f"3. CRITICAL: When multiple ⟨...⟩ tokens appear near each other, "
+            f"you MUST keep their original left-to-right order. Do not swap or reorder adjacent tokens.\n"
             f"4. Output ONLY the valid JSON object. No markdown formatting.\n\n"
             f"=== SYNTAX RULES ===\n"
             f"5. Restructure English relative clauses into {lang_english} pre-modifiers:\n"
@@ -623,15 +636,18 @@ class TranslatorThread(QThread):
         
         protected_items = {}
         variable_map = {}
-        
+        tag_map = {}
+
         for key, text in unique_items.items():
             if text and isinstance(text, str):
-                protected_text, variables = protect_variables(text)
+                protected_text, variables, t2i = protect_variables(text)
                 protected_items[key] = protected_text
                 variable_map[key] = variables
+                tag_map[key] = t2i
             else:
                 protected_items[key] = text
                 variable_map[key] = []
+                tag_map[key] = {}
         
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = self._build_headers()
@@ -702,57 +718,51 @@ class TranslatorThread(QThread):
             ],
         }
         
-        response = requests.post(url, headers=headers, json=data, timeout=120)
-        response.raise_for_status()
-        
-        result_json = response.json()
-        content = result_json['choices'][0]['message']['content'].strip()
-        
-        if content.startswith("```json"):
-            content = content[7:]
-        if content.startswith("```"):
-            content = content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
-        content = content.strip()
-        
-        first_brace = content.find('{')
-        last_brace = content.rfind('}')
-        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-            content = content[first_brace:last_brace + 1]
-        
-        try:
-            translated = json.loads(content)
-        except json.JSONDecodeError as e:
-            recovered = _recover_partial_json(content)
-            if recovered:
-                print(f"JSON parse failed ({e}), recovered {len(recovered)} of {len(protected_items)} items from partial response")
-                translated = recovered
-            else:
-                raise
-        
+        translated = self._call_llm(url, headers, data, len(protected_items))
+        if translated is None:
+            return final_results, validation_results
+
         unique_results = {}
+        corrupted_keys = {}
+
         for key, translated_text in translated.items():
             if key in variable_map and variable_map[key]:
-                restored_text = restore_variables(translated_text, variable_map[key])
-                
-                if '__VAR_' in restored_text:
-                    restored_text = _fuzzy_restore(restored_text, variable_map[key])
-                
+                restored_text, unrestored = restore_variables(
+                    translated_text, variable_map[key], tag_map[key]
+                )
+
+                if unrestored:
+                    print(f"Placeholder corruption for '{key}': {len(unrestored)} tag(s) lost/altered")
+                    corrupted_keys[key] = unique_items[key]
+                    continue
+
                 is_valid, issues = validate_translation(unique_items.get(key, ''), restored_text, self.glossary)
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
                     validation_results[key] = {"issues": issues, "reviewed": False}
-                
+
                 unique_results[key] = restored_text
             else:
                 is_valid, issues = validate_translation(unique_items.get(key, ''), translated_text, self.glossary)
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
                     validation_results[key] = {"issues": issues, "reviewed": False}
-                
+
                 unique_results[key] = translated_text
-        
+
+        if corrupted_keys:
+            retried = self._retry_corrupted(
+                corrupted_keys, url, headers, lang_english, variable_map, tag_map
+            )
+            for key, text in retried.items():
+                unique_results[key] = text
+            corrupted_keys = {k: v for k, v in corrupted_keys.items() if k not in retried}
+
+        for key in corrupted_keys:
+            print(f"Using original text for corrupted key: {key}")
+            unique_results[key] = unique_items[key]
+            validation_results[key] = {"issues": ["Placeholder corruption — kept original"], "reviewed": False}
+
         for text, keys in text_to_keys.items():
             representative_key = keys[0]
             if representative_key in unique_results:
@@ -764,6 +774,110 @@ class TranslatorThread(QThread):
                         validation_results[key] = validation_results[representative_key].copy()
         
         return final_results, validation_results
+
+    def _call_llm(self, url, headers, data, expected_count):
+        try:
+            response = requests.post(url, headers=headers, json=data, timeout=120)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            print(f"LLM request failed: {e}")
+            return None
+
+        result_json = response.json()
+        content = result_json['choices'][0]['message']['content'].strip()
+
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
+        first_brace = content.find('{')
+        last_brace = content.rfind('}')
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            content = content[first_brace:last_brace + 1]
+
+        try:
+            translated = json.loads(content)
+        except json.JSONDecodeError as e:
+            recovered = _recover_partial_json(content)
+            if recovered:
+                print(f"JSON parse failed ({e}), recovered {len(recovered)} of {expected_count} items from partial response")
+                translated = recovered
+            else:
+                raise
+
+        return translated
+
+    def _retry_corrupted(self, corrupted_keys, url, headers, lang_english, variable_map, tag_map):
+        max_retries = 3
+        resolved = {}
+
+        remaining = dict(corrupted_keys)
+
+        for attempt in range(max_retries):
+            if not remaining:
+                break
+
+            print(f"Retry attempt {attempt + 1}/{max_retries} for {len(remaining)} corrupted item(s)")
+
+            retry_protected = {}
+            retry_tag_map = {}
+            for key, text in remaining.items():
+                p, v, t = protect_variables(text)
+                retry_protected[key] = p
+                variable_map[key] = v
+                retry_tag_map[key] = t
+                tag_map[key] = t
+
+            prompt = json.dumps(retry_protected, ensure_ascii=False)
+            data = {
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            f"You are a professional translator for Minecraft mods.\n"
+                            f"Translate to {lang_english}. Output ONLY valid JSON.\n"
+                            f"CRITICAL: Keep ALL tokens in ⟨⟩ brackets EXACTLY as-is.\n"
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Translate the following values to {lang_english}:\n\n{prompt}"
+                    }
+                ],
+            }
+
+            try:
+                translated = self._call_llm(url, headers, data, len(retry_protected))
+            except Exception as e:
+                print(f"Retry LLM call failed: {e}")
+                continue
+            if translated is None:
+                continue
+
+            still_corrupted = {}
+            for key, translated_text in translated.items():
+                if key not in remaining:
+                    continue
+                restored_text, unrestored = restore_variables(
+                    translated_text, variable_map[key], tag_map[key]
+                )
+                if unrestored:
+                    still_corrupted[key] = remaining[key]
+                    continue
+
+                is_valid, issues = validate_translation(remaining[key], restored_text, self.glossary)
+                if not is_valid:
+                    print(f"Retry warning for '{key}': {issues}")
+                resolved[key] = restored_text
+
+            remaining = still_corrupted
+
+        return resolved
 
     def _progressive_save(self, results: dict, batch_sources: dict):
         if not self.memory or not results:
