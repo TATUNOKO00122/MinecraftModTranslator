@@ -85,7 +85,7 @@ class SettingsDialog(QDialog):
         freq_model_layout.addRow("モデル:", self.freq_model_combo)
 
         freq_hint = QLabel("頻出語の仮翻訳に使用するモデル（安価・高速モデルを推奨）")
-        freq_hint.setStyleSheet("color: #888; font-size: 11px;")
+        freq_hint.setObjectName("HintLabel")
         freq_model_layout.addRow("", freq_hint)
 
         freq_model_group.setLayout(freq_model_layout)
@@ -145,7 +145,7 @@ class SettingsDialog(QDialog):
         perf_layout.addRow("並列リクエスト数:", self.parallel_spin)
         
         help_label = QLabel("※ 無料モデル: 1〜2推奨 / 有料モデル: 3〜5推奨")
-        help_label.setStyleSheet("color: #888; font-size: 11px;")
+        help_label.setObjectName("HintLabel")
         perf_layout.addRow("", help_label)
         
         perf_group.setLayout(perf_layout)

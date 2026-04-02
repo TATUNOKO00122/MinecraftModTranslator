@@ -34,22 +34,7 @@ class GlossaryDialog(QDialog):
         # New Feature Button (Above standard buttons)
         extra_btn_layout = QHBoxLayout()
         create_all_btn = QPushButton("全MODから辞書作成 (クエスト除外 - AI)")
-        create_all_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #007acc;
-                color: #ffffff;
-                border: 1px solid #007acc;
-                padding: 6px 14px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #0062a3;
-                border: 1px solid #0062a3;
-            }
-            QPushButton:pressed {
-                background-color: #005a9e;
-            }
-        """)
+        create_all_btn.setObjectName("PrimaryButton")
         create_all_btn.clicked.connect(self.request_dictionary_creation)
         extra_btn_layout.addWidget(create_all_btn)
         self.layout.addLayout(extra_btn_layout)

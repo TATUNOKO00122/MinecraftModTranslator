@@ -2,70 +2,14 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTableWidget,
                                 QTableWidgetItem, QPushButton, QHeaderView, QLabel,
                                 QCheckBox, QWidget, QLineEdit, QRadioButton,
                                 QButtonGroup, QProgressBar, QMessageBox, QMenu,
-                                QStyleOptionButton, QStyle, QAbstractItemView)
-from PySide6.QtCore import Qt, QThread, Signal, QRect
-from PySide6.QtGui import QColor, QPainter, QPen, QAction
+                                QAbstractItemView)
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QColor, QAction
 import json
 import requests
 
 
 _INCONSISTENT_BG = QColor(255, 255, 210)
-
-
-class CheckMarkCheckBox(QCheckBox):
-    def __init__(self, text="", parent=None):
-        super().__init__(text, parent)
-        self.setStyleSheet(
-            "QCheckBox::indicator { width: 16px; height: 16px;"
-            " background: transparent; border: none; }"
-        )
-
-    def paintEvent(self, event):
-        opt = QStyleOptionButton()
-        self.initStyleOption(opt)
-
-        ind_rect = self.style().subElementRect(
-            QStyle.SubElement.SE_CheckBoxIndicator, opt, self
-        )
-        contents_rect = self.style().subElementRect(
-            QStyle.SubElement.SE_CheckBoxContents, opt, self
-        )
-
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-
-        is_checked = self.isChecked()
-        border = QColor("#888888") if self.underMouse() else QColor("#666666")
-        if is_checked:
-            border = QColor("#007acc")
-
-        p.setPen(QPen(border, 1.5))
-        p.setBrush(QColor("#1e1e1e"))
-        p.drawRect(ind_rect)
-
-        if is_checked:
-            pen = QPen(border, 2)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-            p.setPen(pen)
-            r = ind_rect
-            m = max(3, int(r.width() * 0.2))
-            left = r.left() + m
-            mid_x = r.left() + int(r.width() * 0.4)
-            right = r.right() - m
-            top = r.top() + m
-            bottom = r.bottom() - m
-            mid_y = r.center().y() + 1
-            p.drawLine(left, mid_y, mid_x, bottom)
-            p.drawLine(mid_x, bottom, right, top)
-
-        text = self.text()
-        if text:
-            p.setPen(QColor("#d4d4d4"))
-            p.setFont(self.font())
-            p.drawText(contents_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
-
-        p.end()
 
 
 class TermExtractionDialog(QDialog):
@@ -99,7 +43,7 @@ class TermExtractionDialog(QDialog):
         header_text += "\n辞書に追加する項目にチェックを入れてください。原文・訳文ともに直接編集できます。"
 
         header_label = QLabel(header_text)
-        header_label.setStyleSheet("font-size: 12px; margin-bottom: 5px;")
+        header_label.setObjectName("HeaderLabel")
         layout.addWidget(header_label)
 
         search_layout = QHBoxLayout()
@@ -135,10 +79,9 @@ class TermExtractionDialog(QDialog):
         self.table.setRowCount(len(self._row_data))
 
         for row, (orig, trans, is_inconsistent, info_text) in enumerate(self._row_data):
-            checkbox = CheckMarkCheckBox()
+            checkbox = QCheckBox()
             checkbox.setChecked(not is_inconsistent)
             checkbox_widget = QWidget()
-            checkbox_widget.setStyleSheet("background: transparent;")
             cb_layout = QHBoxLayout(checkbox_widget)
             cb_layout.addWidget(checkbox)
             cb_layout.setAlignment(Qt.AlignCenter)
@@ -183,11 +126,8 @@ class TermExtractionDialog(QDialog):
         btn_layout = QHBoxLayout()
 
         add_btn = QPushButton("選択した項目を辞書に追加")
+        add_btn.setObjectName("PrimaryButton")
         add_btn.clicked.connect(self._add_selected)
-        add_btn.setStyleSheet(
-            "background-color: #007acc; color: #ffffff; border: 1px solid #007acc;"
-            " padding: 6px 14px; font-weight: bold;"
-        )
         btn_layout.addWidget(add_btn)
 
         skip_btn = QPushButton("スキップ")
@@ -399,7 +339,7 @@ class FrequentTermDialog(QDialog):
             "辞書に登録する項目にチェックを入れ、訳文（日本語）を入力してください。\n"
             "登録された用語は翻訳時の一貫性確保に使用されます。"
         )
-        header_label.setStyleSheet("font-size: 12px; margin-bottom: 5px;")
+        header_label.setObjectName("HeaderLabel")
         layout.addWidget(header_label)
 
         search_layout = QHBoxLayout()
@@ -431,10 +371,9 @@ class FrequentTermDialog(QDialog):
         self.table.setRowCount(len(self._frequent_terms))
 
         for row, (term, count, sample_keys) in enumerate(self._frequent_terms):
-            checkbox = CheckMarkCheckBox()
+            checkbox = QCheckBox()
             checkbox.setChecked(False)
             checkbox_widget = QWidget()
-            checkbox_widget.setStyleSheet("background: transparent;")
             cb_layout = QHBoxLayout(checkbox_widget)
             cb_layout.addWidget(checkbox)
             cb_layout.setAlignment(Qt.AlignCenter)
@@ -496,11 +435,8 @@ class FrequentTermDialog(QDialog):
         btn_layout = QHBoxLayout()
 
         add_btn = QPushButton("選択した項目を辞書に追加")
+        add_btn.setObjectName("PrimaryButton")
         add_btn.clicked.connect(self._add_selected)
-        add_btn.setStyleSheet(
-            "background-color: #007acc; color: #ffffff; border: 1px solid #007acc;"
-            " padding: 6px 14px; font-weight: bold;"
-        )
         btn_layout.addWidget(add_btn)
 
         skip_btn = QPushButton("スキップ")

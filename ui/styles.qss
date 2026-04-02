@@ -102,7 +102,7 @@ QCheckBox::indicator {
 }
 QCheckBox::indicator:checked {
     border-color: #007acc;
-    background-color: #1e1e1e;
+    background-color: #007acc;
 }
 QCheckBox::indicator:hover {
     border-color: #888888;
@@ -245,7 +245,81 @@ QSplitter::handle:hover {
     background-color: #007acc;
 }
 
+/* Danger Button - Red accent for destructive/stop actions */
+QPushButton#DangerButton {
+    background-color: #3c3c3c;
+    color: #ff6666;
+    border: 1px solid #663333;
+    border-radius: 0px;
+    padding: 6px 12px;
+    font-weight: bold;
+}
+QPushButton#DangerButton:hover {
+    background-color: #4c2a2a;
+    color: #ff8888;
+    border: 1px solid #884444;
+}
+QPushButton#DangerButton:pressed {
+    background-color: #2d1a1a;
+}
+
+/* Progress Bar */
+QProgressBar {
+    background-color: #1e1e1e;
+    border: 1px solid #3d3d3d;
+    border-radius: 0px;
+    text-align: center;
+    color: #d4d4d4;
+    min-height: 22px;
+    font-size: 12px;
+}
+QProgressBar::chunk {
+    background-color: #007acc;
+    border: none;
+}
+
+/* SNBT Warning Button */
+QToolButton#SnbtWarningButton {
+    border: 1px solid #ff4444;
+    background-color: #3c1e1e;
+    color: #ffaaaa;
+    padding: 4px 8px;
+}
+QToolButton#SnbtWarningButton:hover {
+    background-color: #4c2e2e;
+    border: 1px solid #ff6666;
+}
+
 /* Labels */
 QLabel {
     color: #d4d4d4;
+}
+QLabel#BusyTitle {
+    font-size: 22px;
+    font-weight: bold;
+    color: #ffffff;
+    background: transparent;
+    border: none;
+}
+QLabel#BusyMessage {
+    font-size: 14px;
+    color: #888888;
+    background: transparent;
+    border: none;
+}
+QLabel#HintLabel {
+    color: #888888;
+    font-size: 11px;
+}
+QLabel#HeaderLabel {
+    font-size: 12px;
+    margin-bottom: 5px;
+}
+QLabel#ModLabel {
+    font-size: 16px;
+    color: #888888;
+    padding: 20px;
+}
+QFrame#BusySeparator {
+    color: #3d3d3d;
 }

@@ -8,7 +8,7 @@ import ctypes
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolBar, 
                                 QFileDialog, QMessageBox, QLabel, QProgressBar, QMenu, QSplitter, QListWidget, QApplication,
                                 QDialog, QDialogButtonBox, QListWidgetItem, QToolButton, QComboBox, QPushButton,
-                                QStackedWidget, QFrame)
+                                QStackedWidget, QFrame, QCheckBox)
 from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut, QIcon, QColor
 from PySide6.QtCore import Qt, QTimer
 
@@ -21,7 +21,7 @@ from logic import datapack_handler
 from ui.editor_widget import EditorWidget
 from ui.settings_dialog import SettingsDialog
 from ui.glossary_dialog import GlossaryDialog
-from ui.term_extraction_dialog import TermExtractionDialog, FrequentTermDialog, FrequentTermTranslateThread, CheckMarkCheckBox
+from ui.term_extraction_dialog import TermExtractionDialog, FrequentTermDialog, FrequentTermTranslateThread
 from logic.term_extractor import AITermExtractorThread, extract_all_term_candidates, extract_frequent_terms_from_original
 from logic.resource_pack_handler import ResourcePackImportThread
 
@@ -203,7 +203,7 @@ class MainWindow(QMainWindow):
 
         self.mod_label = QLabel("MODファイルまたはMinecraftディレクトリをドラッグ＆ドロップしてください")
         self.mod_label.setAlignment(Qt.AlignCenter)
-        self.mod_label.setStyleSheet("font-size: 16px; color: #888888; padding: 20px;")
+        self.mod_label.setObjectName("ModLabel")
         right_layout.addWidget(self.mod_label)
         
         self.editor = EditorWidget()
@@ -235,24 +235,7 @@ class MainWindow(QMainWindow):
         
         self.stop_translation_btn = QPushButton("中断")
         self.stop_translation_btn.setFixedWidth(80)
-        self.stop_translation_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #3c3c3c;
-                color: #ff6666;
-                border: 1px solid #663333;
-                padding: 6px 12px;
-                border-radius: 0px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #4c2a2a;
-                color: #ff8888;
-                border: 1px solid #884444;
-            }
-            QPushButton:pressed {
-                background-color: #2d1a1a;
-            }
-        """)
+        self.stop_translation_btn.setObjectName("DangerButton")
         self.stop_translation_btn.clicked.connect(self.stop_translation)
         self.stop_translation_btn.hide()
         progress_layout.addWidget(self.stop_translation_btn)
@@ -263,13 +246,12 @@ class MainWindow(QMainWindow):
 
         # --- Page 1: Busy / Loading screen ---
         busy_page = QWidget()
-        busy_page.setStyleSheet("background-color: #2b2b2b;")
         busy_layout = QVBoxLayout(busy_page)
         busy_layout.setAlignment(Qt.AlignCenter)
 
         self._busy_title = QLabel("処理中")
         self._busy_title.setAlignment(Qt.AlignCenter)
-        self._busy_title.setStyleSheet("font-size: 22px; font-weight: bold; color: #ffffff; background: transparent; border: none;")
+        self._busy_title.setObjectName("BusyTitle")
         busy_layout.addWidget(self._busy_title)
 
         busy_layout.addSpacing(8)
@@ -277,14 +259,15 @@ class MainWindow(QMainWindow):
         busy_sep = QFrame()
         busy_sep.setFixedWidth(480)
         busy_sep.setFrameShape(QFrame.HLine)
-        busy_sep.setStyleSheet("color: #3d3d3d;")
+        busy_sep.setFrameShape(QFrame.HLine)
+        busy_sep.setObjectName("BusySeparator")
         busy_layout.addWidget(busy_sep, alignment=Qt.AlignCenter)
 
         busy_layout.addSpacing(12)
 
         self._busy_message = QLabel("しばらくお待ちください...")
         self._busy_message.setAlignment(Qt.AlignCenter)
-        self._busy_message.setStyleSheet("font-size: 14px; color: #888888; background: transparent; border: none;")
+        self._busy_message.setObjectName("BusyMessage")
         busy_layout.addWidget(self._busy_message)
 
         busy_layout.addSpacing(20)
@@ -294,48 +277,12 @@ class MainWindow(QMainWindow):
         self._busy_progress.setFixedWidth(480)
         self._busy_progress.setTextVisible(True)
         self._busy_progress.setFormat("準備中...")
-        self._busy_progress.setStyleSheet("""
-            QProgressBar {
-                background-color: #1e1e1e;
-                border: 1px solid #3d3d3d;
-                border-radius: 0px;
-                text-align: center;
-                color: #d4d4d4;
-                min-height: 22px;
-                font-size: 12px;
-            }
-            QProgressBar::chunk {
-                background-color: #007acc;
-                border: none;
-            }
-        """)
         busy_layout.addWidget(self._busy_progress, alignment=Qt.AlignCenter)
 
         busy_layout.addSpacing(20)
 
         self._busy_cancel_btn = QPushButton("キャンセル")
         self._busy_cancel_btn.setFixedSize(120, 32)
-        self._busy_cancel_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #3c3c3c;
-                color: #d4d4d4;
-                border: 1px solid #3d3d3d;
-                border-radius: 0px;
-                padding: 6px 14px;
-                font-size: 13px;
-            }
-            QPushButton:hover {
-                background-color: #505050;
-                color: #ffffff;
-            }
-            QPushButton:pressed {
-                background-color: #2d2d2d;
-            }
-            QPushButton:disabled {
-                background-color: #3c3c3c;
-                color: #666666;
-            }
-        """)
         busy_layout.addWidget(self._busy_cancel_btn, alignment=Qt.AlignCenter)
 
         busy_layout.addStretch()
@@ -817,23 +764,10 @@ class MainWindow(QMainWindow):
         )
         
         if unapplied:
-            # Red border warning style
-            self.apply_snbt_btn.setStyleSheet("""
-                QToolButton {
-                    border: 1px solid #ff4444;
-                    background-color: #3c1e1e;
-                    color: #ffaaaa;
-                    padding: 4px 8px;
-                }
-                QToolButton:hover {
-                    background-color: #4c2e2e;
-                    border: 1px solid #ff6666;
-                }
-            """)
+            self.apply_snbt_btn.setObjectName("SnbtWarningButton")
             self.apply_snbt_btn.setToolTip("⚠️ 未適用のクエストがあります！クリックして適用してください。")
         else:
-            # Normal style
-            self.apply_snbt_btn.setStyleSheet("")
+            self.apply_snbt_btn.setObjectName("")
             self.apply_snbt_btn.setToolTip("FTBクエストのSNBTファイルに翻訳を適用します")
 
     # --- Context Menu ---
@@ -1930,7 +1864,7 @@ class MainWindow(QMainWindow):
         if not freq_model:
             freq_model = "deepseek/deepseek-chat"
 
-        Toggle = CheckMarkCheckBox
+        Toggle = QCheckBox
 
         dlg = QDialog(self)
         dlg.setWindowTitle("頻出語抽出")
