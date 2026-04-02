@@ -1,12 +1,53 @@
-import requests
+import collections
 import json
-import time
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
 from PySide6.QtCore import QThread, Signal
 
 from logic.file_handler import TARGET_LANGUAGES
 
+KEY_CATEGORY_HINTS = {
+    "item": "アイテム名",
+    "block": "ブロック名",
+    "itemGroup": "クリエイティブタブ名",
+    "tooltip": "ツールチップ説明文",
+    "desc": "説明文",
+    "description": "説明文",
+    "enchantment": "エンチャント名・説明",
+    "effect": "ステータス効果",
+    "potion": "ポーション効果",
+    "entity": "エンティティ名",
+    "biome": "バイオーム名",
+    "advancement": "進捗タイトル・説明",
+    "death": "死亡メッセージ",
+    "subtitles": "字幕テキスト",
+    "subtitle": "字幕テキスト",
+    "container": "コンテナ・UI名",
+    "stat": "統計名",
+    "gui": "GUIテキスト",
+    "sound": "サウンド関連",
+    "text": "テキスト",
+    "message": "メッセージ",
+    "key": "キーバインド名",
+    "category": "カテゴリ名",
+    "tag": "タグ名",
+    "fluid": "液体名",
+    "gamerule": "ゲームルール",
+}
+
+SECOND_LEVEL_HINTS = {
+    "name": "名詞（アイテム/ブロック/エンティティの名称）",
+    "title": "タイトル",
+    "tooltip": "ツールチップ説明文",
+    "desc": "説明文",
+    "description": "説明文",
+    "lore": "背景設定・フレーバーテキスト",
+    "flavor": "フレーバーテキスト",
+    "tip": "ヒント・チップ",
+}
 
 VARIABLE_PATTERNS = [
     r'\[calc:[a-zA-Z0-9_]+\]',
@@ -253,6 +294,42 @@ class TranslatorThread(QThread):
     error = Signal(str)
     partial_save = Signal(dict)
     validation_finished = Signal(dict)
+
+    @staticmethod
+    def _extract_key_context(keys):
+        prefix_counts = collections.Counter()
+        suffix_counts = collections.Counter()
+
+        for key in keys:
+            parts = key.split(".")
+            if len(parts) >= 2:
+                prefix_counts[parts[0]] += 1
+            if len(parts) >= 3:
+                suffix_counts[parts[-1]] += 1
+
+        total = len(keys)
+        if total == 0:
+            return ""
+
+        hints = []
+        for prefix, count in prefix_counts.most_common(2):
+            if count / total >= 0.2:
+                label = KEY_CATEGORY_HINTS.get(prefix)
+                if label:
+                    ratio = f"({count}/{total})"
+                    hints.append(f"{label} {ratio}")
+
+        for suffix, count in suffix_counts.most_common(2):
+            if count / total >= 0.2:
+                label = SECOND_LEVEL_HINTS.get(suffix)
+                if label:
+                    ratio = f"({count}/{total})"
+                    hints.append(f"{label} {ratio}")
+
+        if not hints:
+            return ""
+
+        return "このバッチの翻訳対象の主な種類: " + "、".join(hints)
 
     def _build_headers(self):
         return {
@@ -574,6 +651,10 @@ class TranslatorThread(QThread):
         lang_english = lang_info[0]
         
         system_content = self._build_system_prompt(lang_english)
+
+        key_context = self._extract_key_context(list(items.keys()))
+        if key_context:
+            system_content += f"\n\n=== KEY CONTEXT ===\n{key_context}"
 
         if self.glossary:
             batch_text = " ".join([str(v) for v in unique_items.values()])
