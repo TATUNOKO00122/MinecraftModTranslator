@@ -317,13 +317,22 @@ def validate_translation(original, translated, glossary=None, target_lang="ja_jp
                     score_penalties += 0.2
     
     if target_lang.startswith("ja"):
-        keigo_markers = ['です', 'ます', 'ください', 'しました', 'います', 'されます']
-        da_markers = ['だ', 'である', 'した', 'いる', 'される']
-        has_keigo = any(m in translated for m in keigo_markers)
-        has_da = any(m in translated for m in da_markers)
-        if has_keigo and has_da:
-            issues.append("敬体・常体の混在")
-            score_penalties += 0.2
+        sentences = re.split(r'[。！？\n]+', translated)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        if len(sentences) >= 3:
+            keigo_pattern = re.compile(
+                r'(?:です|ます|ください|しました|います|されます)'
+                r'(?:[。！？\n]|$)'
+            )
+            da_pattern = re.compile(
+                r'(?:だ|である|した|いる|される)'
+                r'(?:[。！？\n]|$)'
+            )
+            has_keigo = bool(keigo_pattern.search(translated))
+            has_da = bool(da_pattern.search(translated))
+            if has_keigo and has_da:
+                issues.append("敬体・常体の混在")
+                score_penalties += 0.2
         
         katakana_chars = sum(1 for c in translated if '\u30A0' <= c <= '\u30FF')
         total_chars = max(len(translated), 1)
