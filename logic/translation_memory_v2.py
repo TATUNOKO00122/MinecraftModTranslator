@@ -540,19 +540,30 @@ class TranslationMemoryV2:
                 return w[:-len(suffix)]
         return w
 
+    _SIMILARITY_THRESHOLD = 0.3
+    _MAX_EXAMPLE_LENGTH = 120
+    _ORIGIN_WEIGHT = {'user': 3.0, 'ai_corrected': 2.0, 'ai': 1.0}
+
+    def _compute_jaccard(self, stems_a: set, stems_b: set) -> float:
+        if not stems_a or not stems_b:
+            return 0.0
+        intersection = len(stems_a & stems_b)
+        union = len(stems_a | stems_b)
+        return intersection / union if union > 0 else 0.0
+
     def find_similar(self, batch_texts: List[str], mod_name: str = None,
                      limit: int = 5) -> List[Tuple[str, str]]:
         """
-        バッチ内テキストと共通単語が多いTM訳例を検索する。
-        
+        バッチ内テキストとJaccard類似度が高いTM訳例を検索する。
+
         Args:
             batch_texts: 現在のバッチの原文テキスト群
             mod_name: 同じMOD名でフィルタ（None=全MOD対象）
             limit: 返す訳例の最大数
         Returns:
-            [(source, translation), ...] 共通単語数順
+            [(source, translation), ...] 類似度順
         """
-        if not batch_texts:
+        if not batch_texts or limit <= 0:
             return []
 
         batch_words = set()
@@ -607,18 +618,29 @@ class TranslationMemoryV2:
         if not candidates:
             return []
 
-        origin_weight = {'user': 2.0, 'ai_corrected': 1.5, 'ai': 1.0}
-
         scored = []
         for row in candidates:
             source = row['source'] or ''
             origin = row['origin'] or 'ai'
+            translation = row['translation'] or ''
+
+            if not translation or len(source) > self._MAX_EXAMPLE_LENGTH or len(translation) > self._MAX_EXAMPLE_LENGTH:
+                continue
+
             source_words = set(re.findall(r'[a-zA-Z]{3,}', source.lower())) - self._STOP_WORDS
             source_stems = {self._stem(w) for w in source_words}
             common_count = len(batch_stems & source_stems)
-            if common_count >= min_stem_count:
-                weight = origin_weight.get(origin, 1.0)
-                scored.append((common_count * weight, source, row['translation']))
+
+            if common_count < min_stem_count:
+                continue
+
+            jaccard = self._compute_jaccard(batch_stems, source_stems)
+            if jaccard < self._SIMILARITY_THRESHOLD:
+                continue
+
+            origin_w = self._ORIGIN_WEIGHT.get(origin, 1.0)
+            score = jaccard * origin_w
+            scored.append((score, jaccard, source, translation))
 
         if not scored:
             return []
@@ -627,7 +649,7 @@ class TranslationMemoryV2:
 
         seen = set()
         results = []
-        for _, source, translation in scored:
+        for _, _, source, translation in scored:
             if source not in seen:
                 seen.add(source)
                 results.append((source, translation))
