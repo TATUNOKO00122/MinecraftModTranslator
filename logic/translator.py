@@ -357,6 +357,7 @@ class TranslatorThread(QThread):
     partial_save = Signal(dict)
     validation_finished = Signal(dict)
     consistency_warnings = Signal(list)
+    token_stats = Signal(dict)
 
     @staticmethod
     def _extract_key_context(keys):
@@ -435,22 +436,27 @@ class TranslatorThread(QThread):
         
         return {k: v for _, k, v in scored[:MAX_GLOSSARY_TERMS]}
 
+    _SUFFIXES_SORTED = (
+        'ication', 'ization', 'ational', 'iness',
+        'ation', 'ition', 'ment', 'ness', 'ence', 'ance',
+        'able', 'ible', 'ings',
+        'ing', 'ful', 'ous', 'ive',
+        'ion', 'ity', 'ism', 'ist',
+        'ed', 'er', 'ly',
+    )
+
     @staticmethod
     def _stem_word(word):
-        """簡易ステミング（品質重視）。"""
         w = word.lower()
-        if w.endswith('ing') and len(w) > 5:
-            return w[:-3]
-        if w.endswith('tion') and len(w) > 5:
-            return w[:-4] + 'te'
-        if w.endswith('ed') and len(w) > 4:
-            return w[:-2]
-        if w.endswith('es') and len(w) > 4:
-            return w[:-2]
-        if w.endswith('s') and not w.endswith('ss') and len(w) > 3:
-            return w[:-1]
-        if w.endswith('ly') and len(w) > 4:
-            return w[:-2]
+        if w.endswith('ies') and len(w) > 4:
+            w = w[:-3] + 'y'
+        elif w.endswith(('sses', 'shes', 'ches', 'xes', 'zes')) and len(w) > 4:
+            w = w[:-2]
+        elif w.endswith('s') and not w.endswith('ss') and len(w) > 3:
+            w = w[:-1]
+        for suffix in TranslatorThread._SUFFIXES_SORTED:
+            if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+                return w[:-len(suffix)]
         return w
 
     def _build_system_prompt(self, lang_english):
@@ -554,6 +560,21 @@ class TranslatorThread(QThread):
         self.target_lang = target_lang
         self.source_type = source_type
         self._completed_translations = {}
+        self._token_usage = {
+            'prompt_tokens': 0,
+            'completion_tokens': 0,
+            'total_tokens': 0,
+            'api_calls': 0,
+        }
+
+    def _accumulate_tokens(self, token_info):
+        if not token_info:
+            return
+        self._token_usage['prompt_tokens'] += token_info.get('prompt_tokens', 0)
+        self._token_usage['completion_tokens'] += token_info.get('completion_tokens', 0)
+        self._token_usage['total_tokens'] += token_info.get('total_tokens', 0)
+        self._token_usage['api_calls'] += 1
+        self.token_stats.emit(dict(self._token_usage))
 
     def _select_context_examples(self, completed, current_keys, limit=8):
         current_prefixes = set(k.split('.')[0] for k in current_keys if '.' in k)
@@ -590,12 +611,12 @@ class TranslatorThread(QThread):
             groups.setdefault((text, prefix), []).append(key)
 
         unique_items = {}
-        text_to_keys = {}
+        group_to_keys = {}
         for (text, prefix), keys in groups.items():
             unique_items[keys[0]] = text
-            text_to_keys.setdefault(text, []).extend(keys)
+            group_to_keys[(text, prefix)] = keys
 
-        return unique_items, text_to_keys
+        return unique_items, group_to_keys
 
     def _create_batches(self, items):
         batches = []
@@ -681,6 +702,7 @@ class TranslatorThread(QThread):
                 self.consistency_warnings.emit(warnings)
         
         self._api_key = None
+        self.token_stats.emit(dict(self._token_usage))
         self.finished.emit(results)
 
     def _run_parallel(self, batches, results, validation_results, total_items):
@@ -698,9 +720,10 @@ class TranslatorThread(QThread):
             chunk_results = {}
             
             with ThreadPoolExecutor(max_workers=current_parallel) as executor:
+                context_snapshot = dict(chunk_results)
                 future_to_batch = {
                     executor.submit(
-                        self._translate_batch_safe, idx, batch_items, chunk_results
+                        self._translate_batch_safe, idx, batch_items, context_snapshot
                     ): (idx, batch_items)
                     for idx, batch_items in batch_chunk
                 }
@@ -795,7 +818,7 @@ class TranslatorThread(QThread):
         if not translatable:
             return final_results, validation_results
         
-        unique_items, text_to_keys = self._group_by_context(translatable)
+        unique_items, group_to_keys = self._group_by_context(translatable)
         
         protected_items = {}
         variable_map = {}
@@ -883,9 +906,10 @@ class TranslatorThread(QThread):
             ],
         }
         
-        translated = self._call_llm(url, headers, data, len(protected_items))
+        translated, token_info = self._call_llm(url, headers, data, len(protected_items))
         if translated is None:
             return final_results, validation_results
+        self._accumulate_tokens(token_info)
 
         unique_results = {}
         corrupted_keys = {}
@@ -932,7 +956,7 @@ class TranslatorThread(QThread):
             unique_results[key] = unique_items[key]
             validation_results[key] = {"issues": ["Placeholder corruption — kept original"], "reviewed": False}
 
-        for text, keys in text_to_keys.items():
+        for (text, prefix), keys in group_to_keys.items():
             representative_key = keys[0]
             if representative_key in unique_results:
                 result_text = unique_results[representative_key]
@@ -950,10 +974,17 @@ class TranslatorThread(QThread):
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
             print(f"LLM request failed: {e}")
-            return None
+            return None, {}
 
         result_json = response.json()
         content = result_json['choices'][0]['message']['content'].strip()
+
+        usage = result_json.get('usage', {})
+        token_info = {
+            'prompt_tokens': usage.get('prompt_tokens', 0),
+            'completion_tokens': usage.get('completion_tokens', 0),
+            'total_tokens': usage.get('total_tokens', 0),
+        }
 
         if content.startswith("```json"):
             content = content[7:]
@@ -978,7 +1009,7 @@ class TranslatorThread(QThread):
             else:
                 raise
 
-        return translated
+        return translated, token_info
 
     def _retry_corrupted(self, corrupted_keys, url, headers, lang_english, variable_map, tag_map):
         max_retries = 3
@@ -1025,7 +1056,8 @@ class TranslatorThread(QThread):
             }
 
             try:
-                translated = self._call_llm(url, headers, data, len(retry_protected))
+                translated, token_info = self._call_llm(url, headers, data, len(retry_protected))
+                self._accumulate_tokens(token_info)
             except Exception as e:
                 print(f"Retry LLM call failed: {e}")
                 continue

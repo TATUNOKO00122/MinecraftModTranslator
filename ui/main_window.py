@@ -1587,6 +1587,8 @@ class MainWindow(QMainWindow):
         self.translation_original_items = items.copy()
         self._partial_saved_keys = set()
 
+        self._last_token_stats = None
+
         glossary_terms = self.glossary.get_terms()
         parallel_count = settings.get("parallel_count", 3)
 
@@ -1611,6 +1613,7 @@ class MainWindow(QMainWindow):
         self.translator_thread.partial_save.connect(self.on_partial_save)
         self.translator_thread.validation_finished.connect(self.on_validation_finished)
         self.translator_thread.consistency_warnings.connect(self.on_consistency_warnings)
+        self.translator_thread.token_stats.connect(self.on_token_stats)
         self.translator_thread.start()
 
         self.progress_bar.setRange(0, len(items))
@@ -1691,6 +1694,24 @@ class MainWindow(QMainWindow):
         msg = "用語一貫性警告:\n" + "\n".join(f"・{w}" for w in warnings[:10])
         print(msg)
         QMessageBox.warning(self, "用語不統一", msg)
+
+    @staticmethod
+    def _format_tokens(count):
+        if count >= 1_000_000:
+            return f"{count / 1_000_000:.1f}M"
+        if count >= 1_000:
+            return f"{count / 1_000:.1f}k"
+        return str(count)
+
+    def on_token_stats(self, stats):
+        self._last_token_stats = stats
+        prompt = self._format_tokens(stats.get('prompt_tokens', 0))
+        completion = self._format_tokens(stats.get('completion_tokens', 0))
+        total = self._format_tokens(stats.get('total_tokens', 0))
+        calls = stats.get('api_calls', 0)
+        self.statusBar().showMessage(
+            f"トークン消費 — 入力: {prompt} / 出力: {completion} / 合計: {total}  (API呼び出し: {calls}回)", 5000
+        )
 
     def mark_selected_reviewed(self):
         """Mark selected rows as reviewed."""
@@ -1853,6 +1874,7 @@ class MainWindow(QMainWindow):
         self._batch_completed_mods = 0
         self._batch_all_results = {}
         self.translation_errors = []
+        self._last_token_stats = None
         
         self._start_next_batch_mod()
 
@@ -1878,6 +1900,7 @@ class MainWindow(QMainWindow):
             return
 
         self.translation_original_items = items.copy()
+        self.translation_total_items = len(items)
         self._partial_saved_keys = set()
         
         glossary_terms = self.glossary.get_terms()
@@ -1898,6 +1921,7 @@ class MainWindow(QMainWindow):
         self.translator_thread.partial_save.connect(self._on_batch_mod_partial_save)
         self.translator_thread.validation_finished.connect(self.on_validation_finished)
         self.translator_thread.consistency_warnings.connect(self.on_consistency_warnings)
+        self.translator_thread.token_stats.connect(self.on_token_stats)
         self.translator_thread.start()
 
         self.progress_bar.setRange(0, len(items))
@@ -1983,12 +2007,25 @@ class MainWindow(QMainWindow):
         completed_count = len(self._batch_all_results)
         total_mods = getattr(self, '_batch_total_mods', 0)
         completed_mods = getattr(self, '_batch_completed_mods', 0)
+
+        ts = getattr(self, '_last_token_stats', None)
+        token_summary = ""
+        if ts and ts.get('total_tokens', 0) > 0:
+            prompt = self._format_tokens(ts['prompt_tokens'])
+            completion = self._format_tokens(ts['completion_tokens'])
+            total = self._format_tokens(ts['total_tokens'])
+            calls = ts.get('api_calls', 0)
+            token_summary = (
+                f"\n\nトークン消費量:\n"
+                f"  入力: {prompt} / 出力: {completion} / 合計: {total}\n"
+                f"  API呼び出し: {calls}回"
+            )
         
         if interrupted:
             if partial_results:
                 QMessageBox.information(self, "中断",
                     f"一括翻訳を中断しました。\n"
-                    f"{completed_mods}/{total_mods} MOD、{completed_count} 件の翻訳は保存されました。")
+                    f"{completed_mods}/{total_mods} MOD、{completed_count} 件の翻訳は保存されました。{token_summary}")
             else:
                 QMessageBox.information(self, "中断", "一括翻訳を中断しました。")
             self.statusBar().showMessage("一括翻訳が中断されました", 3000)
@@ -2000,10 +2037,10 @@ class MainWindow(QMainWindow):
                 if error_count > 3:
                     details += f"\n...他 {error_count - 3} 件"
                 QMessageBox.warning(self, "完了 (一部エラーあり)",
-                    f"{total_mods} MODの一括翻訳完了。{completed_count} 件翻訳、{error_count} 件エラー。\n\n{details}")
+                    f"{total_mods} MODの一括翻訳完了。{completed_count} 件翻訳、{error_count} 件エラー。\n\n{details}{token_summary}")
             else:
                 QMessageBox.information(self, "完了",
-                    f"{total_mods} MODの一括翻訳が完了しました！\n翻訳件数: {completed_count} 件")
+                    f"{total_mods} MODの一括翻訳が完了しました！\n翻訳件数: {completed_count} 件{token_summary}")
         
         self._batch_translate_queue = None
         self._batch_total_mods = None
@@ -2189,7 +2226,20 @@ class MainWindow(QMainWindow):
         
         result_count = len(results)
         auto_saved = len(self._partial_saved_keys) if hasattr(self, '_partial_saved_keys') else 0
-        
+
+        token_summary = ""
+        ts = getattr(self, '_last_token_stats', None)
+        if ts and ts.get('total_tokens', 0) > 0:
+            prompt = self._format_tokens(ts['prompt_tokens'])
+            completion = self._format_tokens(ts['completion_tokens'])
+            total = self._format_tokens(ts['total_tokens'])
+            calls = ts.get('api_calls', 0)
+            token_summary = (
+                f"\n\nトークン消費量:\n"
+                f"  入力: {prompt} / 出力: {completion} / 合計: {total}\n"
+                f"  API呼び出し: {calls}回"
+            )
+
         if self.translation_errors:
             error_count = len(self.translation_errors)
             details = "\n".join(self.translation_errors[:3])
@@ -2197,9 +2247,10 @@ class MainWindow(QMainWindow):
                 details += f"\n...他 {error_count - 3} 件"
             QMessageBox.warning(self, "完了 (一部エラーあり)",
                                 f"自動翻訳は完了しましたが、{error_count} 件のエラーが発生しました。\n"
-                                f"エラーが発生した箇所は翻訳されていません。\n\n詳細:\n{details}")
+                                f"エラーが発生した箇所は翻訳されていません。\n\n詳細:\n{details}{token_summary}")
         else:
-            QMessageBox.information(self, "完了", "自動翻訳が完了しました！")
+            QMessageBox.information(self, "完了",
+                                    f"自動翻訳が完了しました！{token_summary}")
         
         if auto_saved > 0:
             self.statusBar().showMessage(f"翻訳完了: {result_count} 件（うち {auto_saved} 件を自動保存済み）", 5000)
@@ -2362,47 +2413,6 @@ class MainWindow(QMainWindow):
         elif clicked == btn_ai:
             self._start_ai_term_extraction(translated_items)
 
-    def _show_local_term_suggestion(self, translated_items):
-        """翻訳完了後にローカルで一貫性のある用語と翻訳ブレを抽出し、辞書提案ダイアログを表示する。"""
-        if not hasattr(self, 'translation_original_items') or not self.translation_original_items:
-            return
-        
-        consistent, inconsistent = extract_all_term_candidates(
-            self.translation_original_items,
-            translated_items,
-            self.glossary.get_terms()
-        )
-        
-        total = len(consistent) + len(inconsistent)
-        if total == 0:
-            return
-        
-        dialog = TermExtractionDialog(
-            consistent, self.glossary, self,
-            inconsistent_terms=inconsistent
-        )
-        if dialog.exec():
-            added_count = dialog.get_added_count()
-            if added_count > 0:
-                self.statusBar().showMessage(f"{added_count} 件を辞書に追加しました", 5000)
-    
-    def _show_term_extraction_dialog(self, translated_items):
-        """Show dialog to ask if user wants AI term extraction."""
-        if not hasattr(self, 'translation_original_items') or not self.translation_original_items:
-            return
-        
-        # Ask user if they want AI extraction
-        confirm = QMessageBox.question(
-            self, "辞書ツール",
-            "AIを使用して辞書を作成しますか？\n"
-            "抽出された用語は辞書に追加できます。\n\n"
-            "(DeepSeek APIを使用 - 安価)",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        
-        if confirm == QMessageBox.Yes:
-            self._start_ai_term_extraction(translated_items)
-    
     def _start_ai_term_extraction(self, translated_items):
         settings = self.settings_dialog.get_settings()
         api_key = settings.get("api_key")

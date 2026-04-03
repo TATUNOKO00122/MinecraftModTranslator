@@ -424,9 +424,8 @@ class TranslationMemoryV2:
             )
             params = like_params
 
-        with self._write_lock:
-            cursor.execute(query, params)
-            candidates = cursor.fetchall()
+        cursor.execute(query, params)
+        candidates = cursor.fetchall()
 
         if not candidates:
             return []
