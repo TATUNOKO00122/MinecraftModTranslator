@@ -236,14 +236,30 @@ def deep_tag_check(original, translated):
     return [f"Missing tag in translation: {tag}" for tag in sorted(missing)]
 
 
-def _recover_partial_json(content):
-    """LLM出力が途中で切断された場合、完了しているkey-valueペアのみ抽出する。"""
+def _recover_partial_json(content, valid_keys=None, expected_count=0):
+    """LLM出力が途中で切断された場合、完了しているkey-valueペアのみ抽出する。
+    
+    Args:
+        content: LLM出力テキスト
+        valid_keys: 翻訳リクエストに含まれていたキーの集合。指定時はこれに含まれるキーのみ採用
+        expected_count: 期待される翻訳件数。乖離時に警告出力
+    """
     recovered = {}
     pattern = r'"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"'
     for match in re.finditer(pattern, content):
         key = match.group(1)
         value = match.group(2)
+        if key in recovered:
+            continue
+        if valid_keys is not None and key not in valid_keys:
+            continue
         recovered[key] = value
+
+    if expected_count > 0 and len(recovered) > 0:
+        ratio = len(recovered) / expected_count
+        if ratio < 0.5:
+            print(f"WARNING: Partial JSON recovery got {len(recovered)}/{expected_count} items ({ratio:.0%}). "
+                  f"Response may be severely truncated or corrupted.")
     return recovered
 
 
@@ -926,7 +942,7 @@ class TranslatorThread(QThread):
             ],
         }
         
-        translated, token_info = self._call_llm(url, headers, data, len(protected_items))
+        translated, token_info = self._call_llm(url, headers, data, len(protected_items), valid_keys=set(protected_items.keys()))
         if translated is None:
             return final_results, validation_results
         self._accumulate_tokens(token_info)
@@ -996,7 +1012,7 @@ class TranslatorThread(QThread):
 
         return final_results, validation_results
 
-    def _call_llm(self, url, headers, data, expected_count):
+    def _call_llm(self, url, headers, data, expected_count, valid_keys=None):
         try:
             response = requests.post(url, headers=headers, json=data, timeout=120)
             response.raise_for_status()
@@ -1030,7 +1046,7 @@ class TranslatorThread(QThread):
         try:
             translated = json.loads(content)
         except json.JSONDecodeError as e:
-            recovered = _recover_partial_json(content)
+            recovered = _recover_partial_json(content, valid_keys=valid_keys, expected_count=expected_count)
             if recovered:
                 print(f"JSON parse failed ({e}), recovered {len(recovered)} of {expected_count} items from partial response")
                 translated = recovered
@@ -1084,7 +1100,7 @@ class TranslatorThread(QThread):
             }
 
             try:
-                translated, token_info = self._call_llm(url, headers, data, len(retry_protected))
+                translated, token_info = self._call_llm(url, headers, data, len(retry_protected), valid_keys=set(retry_protected.keys()))
                 self._accumulate_tokens(token_info)
             except Exception as e:
                 print(f"Retry LLM call failed: {e}")
