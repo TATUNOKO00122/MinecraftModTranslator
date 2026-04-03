@@ -477,7 +477,7 @@ class TranslatorThread(QThread):
             f"1. Keep ALL ⟨⟩ tokens EXACTLY as-is. Never modify, translate, remove, or reorder them.\n"
             f"   Multiple ⟨...⟩ tokens must stay in original left-to-right order.\n"
             f"2. Glossary terms MUST be used exactly as specified (see glossary section).\n"
-            f"   Post-translation validation will override non-matching terms.\n"
+            f"   A post-translation validator will OVERRIDE any non-matching terms automatically.\n"
             f"3. Keep ALL numeric values EXACTLY as-is. '150%' → '150%', '3-block radius' → '半径3ブロック'.\n"
             f"4. Use 常体 (だ・である調), NOT 敬体 (です・ます調).\n"
             f"   'Increases attack power' → '攻撃力が上がる' NOT '攻撃力が上がります'\n"
@@ -691,7 +691,10 @@ class TranslatorThread(QThread):
             self.validation_finished.emit(validation_results)
         
         if self.glossary and results:
-            warnings = self._check_batch_consistency(results)
+            warnings, corrections = self._check_batch_consistency(results)
+            if corrections:
+                results.update(corrections)
+                print(f"Glossary consistency auto-fix: {len(corrections)} keys corrected")
             if warnings:
                 self.consistency_warnings.emit(warnings)
         
@@ -959,7 +962,9 @@ class TranslatorThread(QThread):
                 if representative_key in validation_results:
                     for key in keys[1:]:
                         validation_results[key] = validation_results[representative_key].copy()
-        
+
+        self._apply_glossary_post_process(final_results, unique_items)
+
         return final_results, validation_results
 
     def _call_llm(self, url, headers, data, expected_count):
@@ -1120,11 +1125,31 @@ class TranslatorThread(QThread):
         except Exception as e:
             print(f"Progressive save failed: {e}")
 
-    def _check_batch_consistency(self, all_translated: dict) -> list:
+    def _apply_glossary_post_process(self, final_results: dict, unique_items: dict):
+        if not self.glossary:
+            return
+
+        for en_term, ja_term in self.glossary.items():
+            en_norm = en_term.strip()
+            if not en_norm or len(en_norm) < 2:
+                continue
+
+            en_pattern = re.compile(re.escape(en_norm), re.IGNORECASE)
+
+            for key, translated in final_results.items():
+                source = unique_items.get(key, self.items.get(key, ''))
+                if not en_pattern.search(source):
+                    continue
+
+                if en_pattern.search(translated):
+                    final_results[key] = en_pattern.sub(ja_term, translated)
+
+    def _check_batch_consistency(self, all_translated: dict):
         issues = []
+        corrections = {}
         glossary = self.glossary if isinstance(self.glossary, dict) else {}
         if not glossary:
-            return issues
+            return issues, corrections
 
         glossary_reverse = {}
         for en, ja in glossary.items():
@@ -1133,6 +1158,7 @@ class TranslatorThread(QThread):
                 glossary_reverse[normalized] = ja
 
         term_translations = {}
+        term_keys = {}
         for key, source_text in self.items.items():
             if key not in all_translated:
                 continue
@@ -1142,19 +1168,39 @@ class TranslatorThread(QThread):
                 word_lower = word.lower()
                 if word_lower in glossary_reverse:
                     ja_expected = glossary_reverse[word_lower]
-                    term_translations.setdefault(word_lower, set())
+                    term_translations.setdefault(word_lower, {})
+                    term_keys.setdefault(word_lower, [])
+                    term_keys[word_lower].append(key)
                     if ja_expected in translation:
-                        term_translations[word_lower].add(ja_expected)
+                        term_translations[word_lower][key] = ja_expected
                     else:
                         extracted = re.findall(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\u3000-\u303f\uff00-\uffef]{2,}', translation)
                         found_term = extracted[0] if extracted else translation[:min(len(translation), 20)]
-                        term_translations[word_lower].add(f"[{found_term}]")
+                        term_translations[word_lower][key] = found_term
 
-        for word, translations_set in term_translations.items():
-            if len(translations_set) > 1:
-                samples = list(translations_set)[:5]
-                issues.append(f"用語不統一: '{word}' → {samples}")
-        return issues
+        for word, key_translations in term_translations.items():
+            unique_vals = set(key_translations.values())
+            if len(unique_vals) <= 1:
+                continue
+
+            canonical = glossary_reverse.get(word)
+            if canonical and canonical in unique_vals:
+                target_term = canonical
+            else:
+                counter = collections.Counter(key_translations.values())
+                target_term = counter.most_common(1)[0][0]
+
+            samples = list(unique_vals)[:5]
+            issues.append(f"用語不統一: '{word}' → {samples} (統一 → '{target_term}')")
+
+            for key, current_term in key_translations.items():
+                if current_term != target_term:
+                    old_text = all_translated[key]
+                    new_text = old_text.replace(current_term, target_term)
+                    if new_text != old_text:
+                        corrections[key] = new_text
+
+        return issues, corrections
 
     def stop(self):
         self.is_running = False
