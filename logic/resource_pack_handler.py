@@ -50,7 +50,7 @@ class ModBatchLoadThread(QThread):
                 data = {k: v for k, v in data.items() if v and str(v).strip()}
                 char_count = sum(len(str(v)) for v in data.values())
 
-                memory_translations = self.memory.apply_to(data)
+                memory_translations = self.memory.apply_to(data, mod_name=mod_name)
 
                 self.mod_loaded.emit({
                     "path": mod_file,

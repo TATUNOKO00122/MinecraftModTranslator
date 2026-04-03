@@ -1218,7 +1218,7 @@ class MainWindow(QMainWindow):
                 "type": "ftbquest"
             }
             
-            memory_translations = self.memory.apply_to(lang_dict)
+            memory_translations = self.memory.apply_to(lang_dict, mod_name=modpack_name)
             if memory_translations:
                 self.loaded_mods[quests_folder]["translations"].update(memory_translations)
             
@@ -1279,7 +1279,7 @@ class MainWindow(QMainWindow):
                 "_item_sources": item_sources,
             }
 
-            memory_translations = self.memory.apply_to(lang_dict)
+            memory_translations = self.memory.apply_to(lang_dict, mod_name=pack_name)
             if memory_translations:
                 self.loaded_mods[datapack_path]["translations"].update(memory_translations)
 
@@ -1465,9 +1465,9 @@ class MainWindow(QMainWindow):
             }
 
             # Auto-apply memory
-            memory_translations = self.memory.apply_to(data)
+            memory_translations = self.memory.apply_to(data, mod_name=mod_name)
             if memory_translations and self.memory:
-                changed = self.memory.find_changed_sources(data)
+                changed = self.memory.find_changed_sources(data, mod_name=mod_name)
                 if changed:
                     changed_keys = set(changed.keys())
                     memory_translations = {
@@ -1477,7 +1477,7 @@ class MainWindow(QMainWindow):
                     print(f"TM: {len(changed)} 件の原文変更を検出、除外しました")
                 
                 if memory_translations:
-                    reviewed_keys = self.memory.batch_get_review_status(memory_translations.keys())
+                    reviewed_keys = self.memory.batch_get_review_status(memory_translations.keys(), mod_name=mod_name)
                     tm_review_status = {}
                     for key in memory_translations:
                         is_reviewed = reviewed_keys.get(key, {}).get("reviewed", False)
@@ -1731,7 +1731,10 @@ class MainWindow(QMainWindow):
         
         if self.memory and keys:
             try:
-                self.memory.mark_reviewed(keys, reviewed=True)
+                current_mod_name = None
+                if self.current_mod_path and self.current_mod_path in self.loaded_mods:
+                    current_mod_name = self.loaded_mods[self.current_mod_path].get("name")
+                self.memory.mark_reviewed(keys, reviewed=True, mod_name=current_mod_name)
             except Exception as e:
                 print(f"Failed to mark reviewed in TM: {e}")
         

@@ -98,51 +98,51 @@ class TranslationMemory:
         
         self._memory_cache = None
     
-    def get(self, key: str) -> Optional[str]:
+    def get(self, key: str, mod_name: str = None) -> Optional[str]:
         """Get translation by key."""
-        return self._v2.get(key)
+        return self._v2.get(key, mod_name=mod_name)
     
-    def get_with_context(self, key: str) -> Optional[dict]:
+    def get_with_context(self, key: str, mod_name: str = None) -> Optional[dict]:
         """
         Get translation with full context metadata.
         
         Returns dict with keys: key, source, translation, mod_name, category, 
                                 model, translated_at, reviewed
         """
-        return self._v2.get_with_context(key)
+        return self._v2.get_with_context(key, mod_name=mod_name)
     
-    def apply_to(self, target_data: Dict[str, str]) -> Dict[str, str]:
+    def apply_to(self, target_data: Dict[str, str], mod_name: str = None) -> Dict[str, str]:
         """
         Returns a dict of translations for the given target_data {key: original}
-        found in memory.
+        found in memory. mod_name があればそのMODのエントリを優先。
         """
-        return self._v2.apply_to(target_data)
+        return self._v2.apply_to(target_data, mod_name=mod_name)
     
     def save(self):
         """Commit any pending changes."""
         self._v2.save()
     
-    def mark_reviewed(self, keys: list, reviewed: bool = True):
+    def mark_reviewed(self, keys: list, reviewed: bool = True, mod_name: str = None):
         """Mark translations as reviewed."""
-        self._v2.mark_reviewed(keys, reviewed)
+        self._v2.mark_reviewed(keys, reviewed, mod_name=mod_name)
     
     def get_unreviewed_count(self) -> int:
         """Get count of unreviewed translations."""
         return self._v2.get_unreviewed_count()
     
-    def batch_get_review_status(self, keys) -> Dict[str, dict]:
+    def batch_get_review_status(self, keys, mod_name: str = None) -> Dict[str, dict]:
         """
         Batch get review status for multiple keys.
         Returns dict of {key: {"reviewed": bool, "origin": str}}
         """
-        return self._v2.batch_get_review_status(keys)
+        return self._v2.batch_get_review_status(keys, mod_name=mod_name)
     
-    def find_changed_sources(self, current_data: Dict[str, str]) -> Dict[str, tuple]:
+    def find_changed_sources(self, current_data: Dict[str, str], mod_name: str = None) -> Dict[str, tuple]:
         """
         Find keys where source text has changed since last translation.
         Returns dict of {key: (old_source, new_source)}
         """
-        return self._v2.find_changed_sources(current_data)
+        return self._v2.find_changed_sources(current_data, mod_name=mod_name)
     
     def find_similar(self, batch_texts: list, mod_name: str = None,
                      limit: int = 5) -> list:
