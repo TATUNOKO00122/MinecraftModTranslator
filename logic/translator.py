@@ -461,37 +461,22 @@ class TranslatorThread(QThread):
 
     def _build_system_prompt(self, lang_english):
         base = (
-            f"You are a professional translator for Minecraft mods and RPG games.\n"
-            f"Translate English text into natural {lang_english}.\n"
-            f"You will receive a JSON object. The keys are identifiers (DO NOT CHANGE KEYS). "
-            f"The values are the English text to translate.\n\n"
-            f"=== CRITICAL (failure = broken output) ===\n"
-            f"1. Keep ALL ⟨⟩ tokens EXACTLY as-is (e.g. ⟨a1b2c3d4e5f6⟩). "
-            f"DO NOT modify, translate, remove, or reorder them.\n"
-            f"2. When multiple ⟨...⟩ tokens appear together, keep their original left-to-right order.\n"
-            f"3. Output ONLY valid JSON. No markdown fences.\n"
-            f"4. Glossary terms MUST be used exactly as specified (see glossary section below).\n\n"
-            f"=== SYNTAX ===\n"
-            f"5. Restructure relative clauses into {lang_english} pre-modifiers:\n"
-            f'   "A sword which deals fire damage" → "火ダメージを与える剣"\n'
-            f'   "The player who defeated the dragon" → "ドラゴンを倒したプレイヤー"\n'
-            f'   "A potion which restores health and grants resistance" → "体力を回復し、耐性を付与するポーション"\n'
-            f'   "The mob that spawns in nether fortresses and drops blaze rods" → "ネザー要塞にスポーンし、ブレイズロッドをドロップするモブ"\n'
-            f"   NEVER leave English-style post-modifiers as-is.\n"
-            f"6. NEVER word-by-word translate. Read the full sentence, understand meaning, produce natural {lang_english}.\n\n"
-            f"=== STYLE ===\n"
-            f"7. Use 常体 (だ・である調), NOT 敬体 (です・ます調).\n"
-            f'   "Increases attack power" → "攻撃力が上がる", NOT "攻撃力が上がります"\n'
-            f"8. Game/fantasy context only. Polysemous words → in-game meaning:\n"
-            f"   'Spiritual' → mystic/divine (NOT mental), 'Throw' attack → hurl/cast (NOT toss), "
-            f"'Spirit' → soul/phantom (NOT enthusiasm)\n"
-            f"9. Prefer natural Japanese compounds over katakana transliteration:\n"
-            f"   'melee weapon' → '近接武器' (NOT ミーリー武器), 'ranged attack' → '遠距離攻撃' (NOT レンジド攻撃), "
-            f"'area of effect' → '範囲効果' (NOT エリアオブエフェクト)\n"
-            f"10. ONLY proper nouns (entity/boss/biome names) use katakana: "
-            f"Invoker → インヴォーカー, Warden → ウォーデン\n"
-            f"11. Keep ALL numeric values EXACTLY as-is (percentages, distances, durations, etc.).\n"
-            f"    '150%' → '150%', '3-block radius' → '半径3ブロック' (数値はそのまま)\n"
+            f"Professional translator for Minecraft mods/RPG games. EN→{lang_english}.\n"
+            f"Input: JSON object. Keys are identifiers (NEVER change keys). Values are English text.\n"
+            f"Output: JSON object with the same keys and translated values. No markdown fences.\n\n"
+            f"=== RULES (priority order) ===\n"
+            f"1. Keep ALL ⟨⟩ tokens EXACTLY as-is. Never modify, translate, remove, or reorder them.\n"
+            f"   Multiple ⟨...⟩ tokens must stay in original left-to-right order.\n"
+            f"2. Glossary terms MUST be used exactly as specified (see glossary section).\n"
+            f"   Post-translation validation will override non-matching terms.\n"
+            f"3. Keep ALL numeric values EXACTLY as-is. '150%' → '150%', '3-block radius' → '半径3ブロック'.\n"
+            f"4. Use 常体 (だ・である調), NOT 敬体 (です・ます調).\n"
+            f"   'Increases attack power' → '攻撃力が上がる' NOT '攻撃力が上がります'\n"
+            f"5. Restructure English relative clauses into Japanese pre-modifiers (連体修飾):\n"
+            f"   'A sword which deals fire damage' → '火ダメージを与える剣'\n"
+            f"6. Prefer natural Japanese compounds over katakana transliteration:\n"
+            f"   'melee weapon' → '近接武器' (NOT ミーリー武器), 'ranged attack' → '遠距離攻撃' (NOT レンジド攻撃)\n"
+            f"   ONLY proper nouns (entity/boss/biome names) use katakana: Invoker → インヴォーカー, Warden → ウォーデン\n"
         )
 
         if self.source_type == "ftbquest":
@@ -893,7 +878,7 @@ class TranslatorThread(QThread):
 
         data = {
             "model": self.model,
-            "temperature": 0.2,
+            "temperature": 0.0,
             "messages": [
                 {
                     "role": "system",
@@ -1047,7 +1032,7 @@ class TranslatorThread(QThread):
             prompt = json.dumps(retry_protected, ensure_ascii=False)
             data = {
                 "model": self.model,
-                "temperature": 0.1,
+                "temperature": 0.0,
                 "messages": [
                     {"role": "system", "content": system_content},
                     {"role": "user",
