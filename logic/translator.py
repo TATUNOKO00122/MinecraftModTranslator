@@ -114,7 +114,9 @@ def should_skip_translation(text, target_lang="ja_jp"):
     if target_lang.startswith("ja") and len(trimmed) > 5:
         cjk_count = len(CJK_PATTERN.findall(trimmed))
         if cjk_count / len(trimmed) > 0.5:
-            return True
+            alpha_words = re.findall(r'[a-zA-Z]{3,}', trimmed)
+            if not alpha_words:
+                return True
     
     return False
 
