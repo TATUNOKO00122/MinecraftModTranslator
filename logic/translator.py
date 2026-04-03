@@ -78,11 +78,18 @@ PLACEHOLDER_LEN = 14
 
 CJK_PATTERN = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF]')
 
+TRANSLATABLE_SHORT_WORDS = frozenset({
+    'no', 'yes', 'on', 'off', 'up', 'down', 'in', 'out',
+    'ok', 'new', 'old', 'hot', 'wet', 'dry', 'red', 'raw',
+    'air', 'ice', 'end', 'use', 'run', 'hit', 'die', 'fly',
+    'ore', 'log', 'dye', 'bow', 'rod', 'map', 'key', 'bed',
+    'hub', 'eye', 'arm', 'leg', 'sky', 'sun', 'sea', 'gem',
+})
+
 NOTRANSLATE_PATTERNS = [
     re.compile(r'^[a-zA-Z]\w*_\w+$'),
     re.compile(r'^[a-z][a-z0-9_.]*:[a-z0-9_./]+$', re.I),
     re.compile(r'^[\d%\.\\\+\-:,/\s]+$'),
-    re.compile(r'^.{1,2}$'),
     re.compile(r'^[\W\d\s]*$', re.U),
 ]
 
@@ -93,13 +100,22 @@ def should_skip_translation(text, target_lang="ja_jp"):
     trimmed = text.strip()
     if not trimmed:
         return True
+    
+    if len(trimmed) <= 3:
+        if trimmed.lower() in TRANSLATABLE_SHORT_WORDS:
+            return False
+        if len(trimmed) <= 2 and not re.search(r'[a-zA-Z]', trimmed):
+            return True
+    
     for pattern in NOTRANSLATE_PATTERNS:
         if pattern.match(trimmed):
             return True
-    if target_lang.startswith("ja") and len(trimmed) > 2:
+    
+    if target_lang.startswith("ja") and len(trimmed) > 5:
         cjk_count = len(CJK_PATTERN.findall(trimmed))
-        if cjk_count / len(trimmed) > 0.3:
+        if cjk_count / len(trimmed) > 0.5:
             return True
+    
     return False
 
 
@@ -229,24 +245,27 @@ def _recover_partial_json(content):
     return recovered
 
 
-def validate_translation(original, translated, glossary=None):
+def validate_translation(original, translated, glossary=None, target_lang="ja_jp"):
     """
-    Validate that translation doesn't have issues.
-    Returns (is_valid, list_of_issues)
+    Validate translation quality.
+    Returns (is_valid, list_of_issues, quality_score)
     """
     issues = []
+    score_penalties = 0.0
     
     if not translated:
-        return True, issues
+        return True, issues, 1.0
     
     if not original:
         original = ""
     
     missing_tags = deep_tag_check(original, translated)
     issues.extend(missing_tags)
+    score_penalties += len(missing_tags) * 0.3
     
     if '{{' in translated or '}}' in translated:
         issues.append(f"Nested braces detected: {translated[:50]}...")
+        score_penalties += 0.5
     
     fullwidth_patterns = [
         (r'％[ｓｄｆ]', '%s/%d/%f with fullwidth'),
@@ -255,21 +274,26 @@ def validate_translation(original, translated, glossary=None):
     for pattern, desc in fullwidth_patterns:
         if re.search(pattern, translated):
             issues.append(f"{desc} detected in: {translated[:50]}...")
+            score_penalties += 0.3
     
     if PLACEHOLDER_RE.search(translated):
         issues.append(f"Unreplaced placeholder in: {translated[:50]}...")
+        score_penalties += 0.4
     
     original_placeholders = len(re.findall(r'\{[^}]+\}|%[0-9]*\$?[sdf]', original))
     translated_placeholders = len(re.findall(r'\{[^}]+\}|%[0-9]*\$?[sdf]', translated))
     if original_placeholders != translated_placeholders:
         issues.append(f"Placeholder count mismatch: original={original_placeholders}, translated={translated_placeholders}")
+        score_penalties += 0.3
     
     if len(original) > 10:
         ratio = len(translated) / len(original)
         if ratio > 5:
             issues.append(f"Translation is {ratio:.1f}x longer than original")
+            score_penalties += 0.3
         elif ratio < 0.2:
             issues.append(f"Translation is {ratio:.1f}x shorter than original")
+            score_penalties += 0.3
     
     ascii_chars_translated = sum(1 for c in translated if ord(c) < 128)
     ascii_ratio_translated = ascii_chars_translated / max(len(translated), 1)
@@ -281,6 +305,7 @@ def validate_translation(original, translated, glossary=None):
         long_english_words = re.findall(r'[A-Za-z]{5,}', translated)
         if long_english_words:
             issues.append(f"May be untranslated (high ASCII, no Japanese): {translated[:30]}...")
+            score_penalties += 0.3
     
     if glossary:
         original_lower = original.lower()
@@ -289,8 +314,38 @@ def validate_translation(original, translated, glossary=None):
             if re.search(r'\b' + re.escape(en_lower) + r'\b', original_lower):
                 if ja_term not in translated and en_lower not in translated.lower():
                     issues.append(f"Glossary term missing: '{en_term}' → expected '{ja_term}'")
+                    score_penalties += 0.2
     
-    return len(issues) == 0, issues
+    if target_lang.startswith("ja"):
+        keigo_markers = ['です', 'ます', 'ください', 'しました', 'います', 'されます']
+        da_markers = ['だ', 'である', 'した', 'いる', 'される']
+        has_keigo = any(m in translated for m in keigo_markers)
+        has_da = any(m in translated for m in da_markers)
+        if has_keigo and has_da:
+            issues.append("敬体・常体の混在")
+            score_penalties += 0.2
+        
+        katakana_chars = sum(1 for c in translated if '\u30A0' <= c <= '\u30FF')
+        total_chars = max(len(translated), 1)
+        if katakana_chars / total_chars > 0.6 and total_chars > 10:
+            issues.append(f"カタカナ比率過多 ({katakana_chars}/{total_chars}文字)")
+            score_penalties += 0.15
+        
+        bracket_english = re.findall(r'[（(][A-Za-z][A-Za-z ]+[)）]', translated)
+        if bracket_english:
+            issues.append(f"括弧内英語残存: {bracket_english[:3]}")
+            score_penalties += 0.1
+        
+        if re.search(r'(.)\1{4,}', translated):
+            issues.append(f"同じ文字の連続あり: {translated[:30]}...")
+            score_penalties += 0.3
+    
+    quality_score = max(0.0, 1.0 - score_penalties)
+    
+    if quality_score < 0.5 and not issues:
+        issues.append(f"品質スコア低: {quality_score:.2f}")
+    
+    return len(issues) == 0, issues, quality_score
 
 
 
@@ -347,24 +402,56 @@ class TranslatorThread(QThread):
         }
 
     def _extract_relevant_glossary(self, batch_text):
-        """バッチテキストから関連glossary語を抽出する。"""
+        """バッチテキストから関連glossary語を抽出する（ステミング対応）。"""
         if not self.glossary:
             return {}
+        
         batch_text_clean = batch_text.lower()
         for pat in COMPILED_PATTERNS:
             batch_text_clean = pat.sub(' ', batch_text_clean)
-        lower_to_original = {}
-        for k, v in self.glossary.items():
-            lower_to_original.setdefault(k.lower(), (k, v))
+        
+        batch_words = set(re.findall(r'[a-z]{3,}', batch_text_clean))
+        batch_stems = {self._stem_word(w): w for w in batch_words}
+        
         scored = []
-        for kl, (k, v) in lower_to_original.items():
-            escaped = re.escape(kl)
-            pattern = r'(?<!\w)' + escaped + r'(?!\w)'
-            matches = re.findall(pattern, batch_text_clean)
-            if matches:
-                scored.append((len(matches), k, v))
-        scored.sort(key=lambda x: x[0], reverse=True)
+        for en_term, ja_term in self.glossary.items():
+            en_lower = en_term.lower()
+            
+            if en_lower in batch_text_clean:
+                scored.append((100, en_term, ja_term))
+                continue
+            
+            term_words = en_lower.split()
+            stem_match_count = 0
+            for tw in term_words:
+                tw_stem = self._stem_word(tw)
+                if tw_stem in batch_stems or tw in batch_words:
+                    stem_match_count += 1
+            
+            if term_words and stem_match_count == len(term_words):
+                scored.append((50, en_term, ja_term))
+        
+        scored.sort(key=lambda x: -x[0])
+        
         return {k: v for _, k, v in scored[:MAX_GLOSSARY_TERMS]}
+
+    @staticmethod
+    def _stem_word(word):
+        """簡易ステミング（品質重視）。"""
+        w = word.lower()
+        if w.endswith('ing') and len(w) > 5:
+            return w[:-3]
+        if w.endswith('tion') and len(w) > 5:
+            return w[:-4] + 'te'
+        if w.endswith('ed') and len(w) > 4:
+            return w[:-2]
+        if w.endswith('es') and len(w) > 4:
+            return w[:-2]
+        if w.endswith('s') and not w.endswith('ss') and len(w) > 3:
+            return w[:-1]
+        if w.endswith('ly') and len(w) > 4:
+            return w[:-2]
+        return w
 
     def _build_system_prompt(self, lang_english):
         base = (
@@ -814,17 +901,21 @@ class TranslatorThread(QThread):
                     corrupted_keys[key] = unique_items[key]
                     continue
 
-                is_valid, issues = validate_translation(unique_items.get(key, ''), restored_text, self.glossary)
+                is_valid, issues, quality = validate_translation(
+                    unique_items.get(key, ''), restored_text, self.glossary, self.target_lang
+                )
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
-                    validation_results[key] = {"issues": issues, "reviewed": False}
+                    validation_results[key] = {"issues": issues, "reviewed": False, "quality_score": quality}
 
                 unique_results[key] = restored_text
             else:
-                is_valid, issues = validate_translation(unique_items.get(key, ''), translated_text, self.glossary)
+                is_valid, issues, quality = validate_translation(
+                    unique_items.get(key, ''), translated_text, self.glossary, self.target_lang
+                )
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
-                    validation_results[key] = {"issues": issues, "reviewed": False}
+                    validation_results[key] = {"issues": issues, "reviewed": False, "quality_score": quality}
 
                 unique_results[key] = translated_text
 
@@ -952,7 +1043,7 @@ class TranslatorThread(QThread):
                     still_corrupted[key] = remaining[key]
                     continue
 
-                is_valid, issues = validate_translation(remaining[key], restored_text, self.glossary)
+                is_valid, issues, quality = validate_translation(remaining[key], restored_text, self.glossary, self.target_lang)
                 if not is_valid:
                     print(f"Retry warning for '{key}': {issues}")
                 resolved[key] = restored_text

@@ -198,8 +198,15 @@ class TranslationMemoryV2:
                         source = CASE WHEN excluded.source != '' THEN excluded.source ELSE translations.source END,
                         source_hash = CASE WHEN excluded.source_hash != '' THEN excluded.source_hash ELSE translations.source_hash END,
                         origin = CASE
-                            WHEN excluded.origin IN ('user', 'ai_corrected') THEN translations.origin
-                            ELSE excluded.origin END
+                            WHEN excluded.origin = 'user' THEN 'user'
+                            WHEN excluded.origin = 'ai_corrected' THEN 'ai_corrected'
+                            WHEN translations.origin IN ('user', 'ai_corrected') THEN translations.origin
+                            ELSE COALESCE(excluded.origin, translations.origin)
+                        END,
+                        reviewed = CASE
+                            WHEN excluded.origin = 'user' THEN 1
+                            ELSE translations.reviewed
+                        END
                 ''', batch_rows)
             
             conn.commit()
@@ -386,46 +393,56 @@ class TranslationMemoryV2:
         conn = self._get_connection()
         cursor = conn.cursor()
 
+        if len(batch_stems) <= 3:
+            min_stem_count = 1
+        elif len(batch_stems) <= 8:
+            min_stem_count = 2
+        else:
+            min_stem_count = max(2, len(batch_stems) // 4)
+
         search_words = list(batch_words | batch_stems)
-        top_words = sorted(search_words, key=len, reverse=True)[:15]
+        top_words = sorted(search_words, key=len, reverse=True)[:20]
         like_clauses = ' OR '.join(['source LIKE ?' for _ in top_words])
         like_params = [f'%{w}%' for w in top_words]
 
         if mod_name:
             query = (
-                f'SELECT source, translation FROM translations '
-                f'WHERE mod_name = ? AND source != "" AND reviewed = 1 '
-                f'AND (origin IN ("user", "ai_corrected") OR origin IS NULL) '
+                f'SELECT source, translation, origin FROM translations '
+                f'WHERE mod_name = ? AND source != "" '
+                f'AND (origin IN ("user", "ai_corrected") OR reviewed = 1) '
                 f'AND ({like_clauses}) '
-                f'LIMIT 200'
+                f'LIMIT 500'
             )
             params = [mod_name] + like_params
         else:
             query = (
-                f'SELECT source, translation FROM translations '
-                f'WHERE source != "" AND reviewed = 1 '
-                f'AND (origin IN ("user", "ai_corrected") OR origin IS NULL) '
+                f'SELECT source, translation, origin FROM translations '
+                f'WHERE source != "" '
+                f'AND (origin IN ("user", "ai_corrected") OR reviewed = 1) '
                 f'AND ({like_clauses}) '
-                f'LIMIT 200'
+                f'LIMIT 500'
             )
             params = like_params
 
-        cursor.execute(query, params)
-        candidates = cursor.fetchall()
+        with self._write_lock:
+            cursor.execute(query, params)
+            candidates = cursor.fetchall()
 
         if not candidates:
             return []
 
-        min_stem_count = max(2, len(batch_stems) // 3)
+        origin_weight = {'user': 2.0, 'ai_corrected': 1.5, 'ai': 1.0}
 
         scored = []
         for row in candidates:
             source = row['source'] or ''
+            origin = row['origin'] or 'ai'
             source_words = set(re.findall(r'[a-zA-Z]{3,}', source.lower())) - self._STOP_WORDS
             source_stems = {self._stem(w) for w in source_words}
             common_count = len(batch_stems & source_stems)
             if common_count >= min_stem_count:
-                scored.append((common_count, source, row['translation']))
+                weight = origin_weight.get(origin, 1.0)
+                scored.append((common_count * weight, source, row['translation']))
 
         if not scored:
             return []
