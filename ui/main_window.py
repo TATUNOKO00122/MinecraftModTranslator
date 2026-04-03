@@ -410,6 +410,22 @@ class MainWindow(QMainWindow):
         if self.current_mod_path:
             self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
             self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
+            
+            user_edits = {
+                k: v for k, v in self.loaded_mods[self.current_mod_path]["translations"].items()
+                if k in self.editor.user_edited_keys and v
+            }
+            if user_edits and self.memory:
+                try:
+                    self.memory.set_context(
+                        mod_name=self.loaded_mods[self.current_mod_path]["name"],
+                        model=None,
+                        sources=self.loaded_mods[self.current_mod_path]["original"]
+                    )
+                    self.memory.update(user_edits, origin='user')
+                    self.editor.user_edited_keys -= set(user_edits.keys())
+                except Exception as e:
+                    print(f"Autosave TM update failed: {e}")
         
         self._save_recovery()
         self._dirty = False
@@ -1373,9 +1389,31 @@ class MainWindow(QMainWindow):
 
             # Auto-apply memory
             memory_translations = self.memory.apply_to(data)
-            if memory_translations:
-                self.loaded_mods[path]["translations"].update(memory_translations)
-                print(f"Applied {len(memory_translations)} translations from memory to {mod_name}")
+            if memory_translations and self.memory:
+                changed = self.memory.find_changed_sources(data)
+                if changed:
+                    changed_keys = set(changed.keys())
+                    memory_translations = {
+                        k: v for k, v in memory_translations.items()
+                        if k not in changed_keys
+                    }
+                    print(f"TM: {len(changed)} 件の原文変更を検出、除外しました")
+                
+                if memory_translations:
+                    reviewed_keys = self.memory.batch_get_review_status(memory_translations.keys())
+                    tm_review_status = {}
+                    for key in memory_translations:
+                        is_reviewed = reviewed_keys.get(key, {}).get("reviewed", False)
+                        is_user = reviewed_keys.get(key, {}).get("origin") == "user"
+                        tm_review_status[key] = {
+                            "issues": [] if (is_reviewed or is_user) else ["TM未検証"],
+                            "reviewed": is_reviewed or is_user
+                        }
+                    
+                    self.loaded_mods[path]["translations"].update(memory_translations)
+                    if tm_review_status:
+                        self.loaded_mods[path]["review_status"] = tm_review_status
+                    print(f"Applied {len(memory_translations)} translations from memory to {mod_name}")
 
             total = len(data)
             translated = self._count_translated(self.loaded_mods[path])
@@ -1496,6 +1534,7 @@ class MainWindow(QMainWindow):
         self.translator_thread.error.connect(self.on_translation_error)
         self.translator_thread.partial_save.connect(self.on_partial_save)
         self.translator_thread.validation_finished.connect(self.on_validation_finished)
+        self.translator_thread.consistency_warnings.connect(self.on_consistency_warnings)
         self.translator_thread.start()
 
         self.progress_bar.setRange(0, len(items))
@@ -1570,6 +1609,13 @@ class MainWindow(QMainWindow):
         if issue_count > 0:
             self.statusBar().showMessage(f"翻訳品質チェック: {issue_count} 件に警告あり（「要確認」フィルターで確認できます）", 5000)
 
+    def on_consistency_warnings(self, warnings):
+        if not warnings:
+            return
+        msg = "用語一貫性警告:\n" + "\n".join(f"・{w}" for w in warnings[:10])
+        print(msg)
+        QMessageBox.warning(self, "用語不統一", msg)
+
     def mark_selected_reviewed(self):
         """Mark selected rows as reviewed."""
         selected_rows = set()
@@ -1585,6 +1631,13 @@ class MainWindow(QMainWindow):
             keys.append(key)
         
         self.editor.mark_reviewed(keys)
+        
+        if self.memory and keys:
+            try:
+                self.memory.mark_reviewed(keys, reviewed=True)
+            except Exception as e:
+                print(f"Failed to mark reviewed in TM: {e}")
+        
         self.statusBar().showMessage(f"{len(keys)} 件を確認済みにしました", 3000)
 
     def _on_editor_selection_changed(self, count):
@@ -1761,6 +1814,7 @@ class MainWindow(QMainWindow):
         self.translator_thread.error.connect(self.on_translation_error)
         self.translator_thread.partial_save.connect(self._on_batch_partial_save)
         self.translator_thread.validation_finished.connect(self.on_validation_finished)
+        self.translator_thread.consistency_warnings.connect(self.on_consistency_warnings)
         self.translator_thread.start()
 
         self.progress_bar.setRange(0, len(items))
@@ -2348,7 +2402,19 @@ class MainWindow(QMainWindow):
                         target_lang=settings.get("target_lang", "ja_jp")
                     )
                 
-                self.memory.update(current_translations)
+                self.memory.set_context(
+                    mod_name=mod_data["name"],
+                    model=None,
+                    sources=mod_data["original"]
+                )
+                user_keys = self.editor.user_edited_keys
+                user_trans = {k: v for k, v in current_translations.items() if k in user_keys}
+                ai_trans = {k: v for k, v in current_translations.items() if k not in user_keys}
+                if user_trans:
+                    self.memory.update(user_trans, origin='user')
+                if ai_trans:
+                    self.memory.update(ai_trans, origin='ai')
+                self.editor.user_edited_keys -= set(user_trans.keys())
                 
                 self._close_busy()
                 QMessageBox.information(self, "成功", f"リソースパックを保存しました:\n{save_path}")
@@ -2414,7 +2480,7 @@ class MainWindow(QMainWindow):
                         json.dump(normalized, f, ensure_ascii=False, indent=2)
                     
                     integrated_count += 1
-                    self.memory.update(translations)
+                    self.memory.update(translations, origin='ai')
                 
                 # FTBクエストを処理
                 for path, mod_data in self.loaded_mods.items():

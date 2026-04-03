@@ -17,6 +17,9 @@ class TranslationEditCommand(QUndoCommand):
 
     def undo(self):
         self.editor._programmatic_update = True
+        key_item = self.table.item(self.row, 0)
+        if key_item:
+            self.editor.user_edited_keys.discard(key_item.text())
         item = self.table.item(self.row, 2)
         if item:
             item.setText(self.old_text)
@@ -31,6 +34,9 @@ class TranslationEditCommand(QUndoCommand):
             self._first_redo_done = True
             return
         self.editor._programmatic_update = True
+        key_item = self.table.item(self.row, 0)
+        if key_item:
+            self.editor.user_edited_keys.add(key_item.text())
         item = self.table.item(self.row, 2)
         if item:
             item.setText(self.new_text)
@@ -56,6 +62,7 @@ class EditorWidget(QWidget):
         self._programmatic_update = False
         self._previous_cell_texts = {}
         self.review_status = {}
+        self.user_edited_keys = set()
         
         # Toolbar
         toolbar = QHBoxLayout()
@@ -125,6 +132,7 @@ class EditorWidget(QWidget):
         self.original_data = data
         self.translations = {}
         self.review_status = {}
+        self.user_edited_keys = set()
         self.undo_stack.clear()
         self._previous_cell_texts.clear()
         self._key_to_row.clear()
@@ -149,6 +157,9 @@ class EditorWidget(QWidget):
         
         cmd = TranslationEditCommand(self.table, row, old_text, new_text, self)
         self.undo_stack.push(cmd)
+        
+        key = self.table.item(row, 0).text()
+        self.user_edited_keys.add(key)
         
         original = self.table.item(row, 1).text()
         self._update_row_color(row, new_text, original)

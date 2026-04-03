@@ -52,7 +52,8 @@ class TranslationMemoryV2:
                 model TEXT,
                 translated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 reviewed INTEGER DEFAULT 0,
-                source_hash TEXT
+                source_hash TEXT,
+                origin TEXT DEFAULT 'ai'
             )
         ''')
         
@@ -62,8 +63,21 @@ class TranslationMemoryV2:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_source_hash ON translations(source_hash)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_reviewed ON translations(reviewed)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_mod_name ON translations(mod_name)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_origin ON translations(origin)')
         
         conn.commit()
+        self._migrate_add_origin()
+    
+    def _migrate_add_origin(self):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT origin FROM translations LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE translations ADD COLUMN origin TEXT DEFAULT 'ai'")
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_origin ON translations(origin)')
+            conn.commit()
+            print("TM schema migrated: added 'origin' column")
     
     def _migrate_from_json_if_needed(self):
         """Migrate from legacy JSON format if exists and DB is empty."""
@@ -140,7 +154,7 @@ class TranslationMemoryV2:
             return 'other'
     
     def update(self, translations: Dict[str, str], mod_name: str = None, 
-               model: str = None, sources: Dict[str, str] = None):
+               model: str = None, sources: Dict[str, str] = None, origin: str = 'ai'):
         """
         Update memory with new translations.
         
@@ -149,6 +163,7 @@ class TranslationMemoryV2:
             mod_name: Name of the MOD being translated
             model: LLM model used for translation
             sources: Dict of {key: source_text} (original English text)
+            origin: 'ai' | 'user' | 'ai_corrected'
         """
         if not translations:
             return
@@ -165,12 +180,12 @@ class TranslationMemoryV2:
             source = sources.get(key, '') if sources else ''
             category = self._detect_category(key)
             source_hash = self._hash_text(source)
-            batch_rows.append((key, source, translation, mod_name, category, model, now, source_hash))
+            batch_rows.append((key, source, translation, mod_name, category, model, now, source_hash, origin))
         
         if batch_rows:
             cursor.executemany('''
-                INSERT INTO translations (key, source, translation, mod_name, category, model, translated_at, source_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO translations (key, source, translation, mod_name, category, model, translated_at, source_hash, origin)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET
                     translation = excluded.translation,
                     mod_name = COALESCE(excluded.mod_name, translations.mod_name),
@@ -178,7 +193,10 @@ class TranslationMemoryV2:
                     model = COALESCE(excluded.model, translations.model),
                     translated_at = excluded.translated_at,
                     source = CASE WHEN excluded.source != '' THEN excluded.source ELSE translations.source END,
-                    source_hash = CASE WHEN excluded.source_hash != '' THEN excluded.source_hash ELSE translations.source_hash END
+                    source_hash = CASE WHEN excluded.source_hash != '' THEN excluded.source_hash ELSE translations.source_hash END,
+                    origin = CASE
+                        WHEN excluded.origin IN ('user', 'ai_corrected') THEN translations.origin
+                        ELSE excluded.origin END,
             ''', batch_rows)
         
         conn.commit()
@@ -196,7 +214,7 @@ class TranslationMemoryV2:
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT key, source, translation, mod_name, category, model, translated_at, reviewed
+            SELECT key, source, translation, mod_name, category, model, translated_at, reviewed, origin
             FROM translations WHERE key = ?
         ''', (key,))
         row = cursor.fetchone()
@@ -233,6 +251,32 @@ class TranslationMemoryV2:
             
             for row in cursor.fetchall():
                 results[row['key']] = row['translation']
+        
+        return results
+    
+    def batch_get_review_status(self, keys) -> Dict[str, dict]:
+        """Get reviewed/origin status for multiple keys in one query."""
+        if not keys:
+            return {}
+        
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        keys_list = list(keys)
+        
+        results = {}
+        batch_size = 500
+        for i in range(0, len(keys_list), batch_size):
+            batch = keys_list[i:i + batch_size]
+            placeholders = self._build_in_clause(len(batch))
+            cursor.execute(
+                f'SELECT key, reviewed, origin FROM translations WHERE key IN ({placeholders})',
+                batch
+            )
+            for row in cursor.fetchall():
+                results[row['key']] = {
+                    "reviewed": bool(row['reviewed']),
+                    "origin": row['origin']
+                }
         
         return results
     
@@ -346,14 +390,18 @@ class TranslationMemoryV2:
         if mod_name:
             query = (
                 f'SELECT source, translation FROM translations '
-                f'WHERE mod_name = ? AND source != "" AND reviewed = 1 AND ({like_clauses}) '
+                f'WHERE mod_name = ? AND source != "" AND reviewed = 1 '
+                f'AND (origin IN ("user", "ai_corrected") OR origin IS NULL) '
+                f'AND ({like_clauses}) '
                 f'LIMIT 200'
             )
             params = [mod_name] + like_params
         else:
             query = (
                 f'SELECT source, translation FROM translations '
-                f'WHERE source != "" AND reviewed = 1 AND ({like_clauses}) '
+                f'WHERE source != "" AND reviewed = 1 '
+                f'AND (origin IN ("user", "ai_corrected") OR origin IS NULL) '
+                f'AND ({like_clauses}) '
                 f'LIMIT 200'
             )
             params = like_params

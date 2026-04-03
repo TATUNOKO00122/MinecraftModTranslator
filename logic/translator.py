@@ -298,6 +298,7 @@ class TranslatorThread(QThread):
     error = Signal(str)
     partial_save = Signal(dict)
     validation_finished = Signal(dict)
+    consistency_warnings = Signal(list)
 
     @staticmethod
     def _extract_key_context(keys):
@@ -512,6 +513,12 @@ class TranslatorThread(QThread):
 
         if validation_results:
             self.validation_finished.emit(validation_results)
+        
+        if self.glossary and results:
+            warnings = self._check_batch_consistency(results)
+            if warnings:
+                self.consistency_warnings.emit(warnings)
+        
         self._api_key = None
         self.finished.emit(results)
 
@@ -898,13 +905,49 @@ class TranslatorThread(QThread):
                     model=self.model,
                     sources=self.items
                 )
-                self.memory.update(saveable)
+                self.memory.update(saveable, origin='ai')
                 print(f"Progressive save: {len(saveable)}/{len(results)} translations saved "
                       f"({len(results) - len(saveable)} filtered)")
             
             self.partial_save.emit(results)
         except Exception as e:
             print(f"Progressive save failed: {e}")
+
+    def _check_batch_consistency(self, all_translated: dict) -> list:
+        issues = []
+        glossary = self.glossary if isinstance(self.glossary, dict) else {}
+        if not glossary:
+            return issues
+
+        glossary_reverse = {}
+        for en, ja in glossary.items():
+            normalized = en.strip().lower()
+            if len(normalized) >= 3:
+                glossary_reverse[normalized] = ja
+
+        term_translations = {}
+        for key, source_text in self.items.items():
+            if key not in all_translated:
+                continue
+            translation = all_translated[key]
+            words = re.findall(r'[a-zA-Z]{3,}', source_text)
+            for word in words:
+                word_lower = word.lower()
+                if word_lower in glossary_reverse:
+                    ja_expected = glossary_reverse[word_lower]
+                    term_translations.setdefault(word_lower, set())
+                    if ja_expected in translation:
+                        term_translations[word_lower].add(ja_expected)
+                    else:
+                        extracted = re.findall(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\u3000-\u303f\uff00-\uffef]{2,}', translation)
+                        found_term = extracted[0] if extracted else translation[:min(len(translation), 20)]
+                        term_translations[word_lower].add(f"[{found_term}]")
+
+        for word, translations_set in term_translations.items():
+            if len(translations_set) > 1:
+                samples = list(translations_set)[:5]
+                issues.append(f"用語不統一: '{word}' → {samples}")
+        return issues
 
     def stop(self):
         self.is_running = False

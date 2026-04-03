@@ -70,7 +70,7 @@ class TranslationMemory:
             self._current_sources = sources
     
     def update(self, translations: Dict[str, str], mod_name: str = None, 
-               model: str = None, sources: Dict[str, str] = None):
+               model: str = None, sources: Dict[str, str] = None, origin: str = 'ai'):
         """
         Updates memory with new translations {key: text}.
         
@@ -79,11 +79,11 @@ class TranslationMemory:
             mod_name: Optional, override context mod_name
             model: Optional, override context model
             sources: Optional, override context sources
+            origin: 'ai' | 'user' | 'ai_corrected'
         """
         if not translations:
             return
         
-        # Use provided values or fall back to context
         effective_mod_name = mod_name or self._current_mod_name
         effective_model = model or self._current_model
         effective_sources = sources or self._current_sources
@@ -92,10 +92,10 @@ class TranslationMemory:
             translations,
             mod_name=effective_mod_name,
             model=effective_model,
-            sources=effective_sources
+            sources=effective_sources,
+            origin=origin
         )
         
-        # Invalidate cache
         self._memory_cache = None
     
     def get(self, key: str) -> Optional[str]:
@@ -129,6 +129,13 @@ class TranslationMemory:
     def get_unreviewed_count(self) -> int:
         """Get count of unreviewed translations."""
         return self._v2.get_unreviewed_count()
+    
+    def batch_get_review_status(self, keys) -> Dict[str, dict]:
+        """
+        Batch get review status for multiple keys.
+        Returns dict of {key: {"reviewed": bool, "origin": str}}
+        """
+        return self._v2.batch_get_review_status(keys)
     
     def find_changed_sources(self, current_data: Dict[str, str]) -> Dict[str, tuple]:
         """
