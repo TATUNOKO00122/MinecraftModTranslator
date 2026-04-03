@@ -707,6 +707,8 @@ class TranslatorThread(QThread):
         current_parallel = self.parallel_count
         batches_since_save = 0
         
+        chunk_results = {}
+        
         batch_index = 0
         while batch_index < len(batches):
             if not self.is_running:
@@ -714,7 +716,6 @@ class TranslatorThread(QThread):
             
             chunk_end = min(batch_index + current_parallel, len(batches))
             batch_chunk = [(i, batches[i]) for i in range(batch_index, chunk_end)]
-            chunk_results = {}
             
             with ThreadPoolExecutor(max_workers=current_parallel) as executor:
                 context_snapshot = dict(chunk_results)
