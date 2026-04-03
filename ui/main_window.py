@@ -1062,7 +1062,13 @@ class MainWindow(QMainWindow):
     def dropEvent(self, event: QDropEvent):
         files = [u.toLocalFile() for u in event.mimeData().urls()]
         for f in files:
-            self.process_path(f)
+            try:
+                self.process_path(f)
+            except Exception as e:
+                print(f"[ERROR] dropEvent process_path failed: {e}")
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(self, "エラー", f"ファイルの処理に失敗しました:\n{e}")
     
     def process_path(self, path, silent=False):
         if os.path.isdir(path):
@@ -1299,6 +1305,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'rp_thread') and self.rp_thread and self.rp_thread.isRunning():
             return
 
+        if not self.loaded_mods:
+            QMessageBox.warning(self, "警告", "先にMODを読み込んでください。")
+            return
+
         self.progress_bar.show()
         self.progress_bar.setRange(0, 0)
         self.statusBar().showMessage("リソースパックを解析中...")
@@ -1324,32 +1334,42 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"リソースパックを読み込み中... ({current}/{total})")
 
     def on_rp_import_finished(self, all_translations, applied_count, matched_mods):
-        self.progress_bar.hide()
-        self._close_busy()
-        self.statusBar().showMessage("リソースパックの適用が完了しました", 3000)
-
-        if self.current_mod_path and self.current_mod_path in self.loaded_mods:
-            self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
-        
-        self.mod_list.setUpdatesEnabled(False)
         try:
-            self.refresh_all_mod_colors()
-        finally:
-            self.mod_list.setUpdatesEnabled(True)
+            self.progress_bar.hide()
+            self._close_busy()
+            self.statusBar().showMessage("リソースパックの適用が完了しました", 3000)
 
-        if matched_mods:
-            QMessageBox.information(self, "リソースパック適用", 
-                                    f"{len(matched_mods)} MODに {applied_count} 項目を適用しました。")
-        else:
-            QMessageBox.information(self, "情報", "適用可能な翻訳が見つかりませんでした。")
-        
-        self.rp_thread = None
+            if self.current_mod_path and self.current_mod_path in self.loaded_mods:
+                self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
+            
+            self.mod_list.setUpdatesEnabled(False)
+            try:
+                self.refresh_all_mod_colors()
+            finally:
+                self.mod_list.setUpdatesEnabled(True)
+
+            if matched_mods:
+                QMessageBox.information(self, "リソースパック適用", 
+                                        f"{len(matched_mods)} MODに {applied_count} 項目を適用しました。")
+            else:
+                QMessageBox.information(self, "情報", "適用可能な翻訳が見つかりませんでした。")
+        except Exception as e:
+            print(f"[ERROR] on_rp_import_finished failed: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "エラー", f"リソースパック適用中にエラーが発生しました:\n{e}")
+        finally:
+            self.rp_thread = None
 
     def on_rp_import_error(self, message):
-        self.progress_bar.hide()
-        self._close_busy()
-        QMessageBox.critical(self, "エラー", f"リソースパック読込に失敗: {message}")
-        self.rp_thread = None
+        try:
+            self.progress_bar.hide()
+            self._close_busy()
+            QMessageBox.critical(self, "エラー", f"リソースパック読込に失敗: {message}")
+        except Exception as e:
+            print(f"[ERROR] on_rp_import_error failed: {e}")
+        finally:
+            self.rp_thread = None
 
     def load_source(self, path):
         if path in self.loaded_mods:

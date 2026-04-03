@@ -1,17 +1,30 @@
 import sys
 import os
+import traceback
 
 # Handle frozen environment (PyInstaller with --noconsole)
-# Redirect stdout/stderr to null if they don't exist to prevent crashes
+# Redirect stdout/stderr to log file to capture crashes
 if getattr(sys, 'frozen', False):
-    # When running as frozen exe without console, stdout/stderr may be None
-    if sys.stdout is None:
-        sys.stdout = open(os.devnull, 'w')
-    if sys.stderr is None:
-        sys.stderr = open(os.devnull, 'w')
+    _log_dir = os.path.join(os.path.dirname(sys.executable), "logs")
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_path = os.path.join(_log_dir, "error.log")
+    if sys.stdout is None or sys.stderr is None:
+        _log_file = open(_log_path, 'a', encoding='utf-8')
+        if sys.stdout is None:
+            sys.stdout = _log_file
+        if sys.stderr is None:
+            sys.stderr = _log_file
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 from ui.main_window import MainWindow
+
+def _global_excepthook(exc_type, exc_value, exc_tb):
+    tb_text = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    print(f"[UNHANDLED EXCEPTION]\n{tb_text}", flush=True)
+    if QApplication.instance():
+        QMessageBox.critical(None, "予期しないエラー", f"エラーが発生しました:\n\n{exc_value}\n\n詳細はコンソール/ログを確認してください。")
+
+sys.excepthook = _global_excepthook
 
 def main():
     app = QApplication(sys.argv)
@@ -30,8 +43,8 @@ def main():
             
     window = MainWindow(base_path=base_path)
     window.show()
-    window.raise_()  # 最前面に表示
-    window.activateWindow()  # アクティブ化
+    window.raise_()
+    window.activateWindow()
     
     sys.exit(app.exec())
 
