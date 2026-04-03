@@ -96,6 +96,7 @@ class EditorWidget(QWidget):
         self.filter_combo.addItem("原文と同じ", 2)
         self.filter_combo.addItem("ローマ字あり", 3)
         self.filter_combo.addItem("要確認", 4)
+        self.filter_combo.addItem("翻訳済み", 5)
         self.filter_combo.currentIndexChanged.connect(self.filter_table)
         toolbar.addWidget(self.filter_combo)
         
@@ -269,6 +270,8 @@ class EditorWidget(QWidget):
             elif filter_state == 4:  # Needs review (has issues, not reviewed)
                 review = self.review_status.get(key, {})
                 match_filter = bool(review.get("issues")) and not review.get("reviewed", False)
+            elif filter_state == 5:  # Translated (has translation, differs from original)
+                match_filter = bool(translation) and translation != original
             
             self.table.setRowHidden(i, not (match_search and match_filter))
         
