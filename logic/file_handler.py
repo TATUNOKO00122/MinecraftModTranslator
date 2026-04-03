@@ -43,18 +43,11 @@ class FileHandler:
         return True
 
     def _normalize_escapes(self, text):
-        """Fix escaped characters that should be plain in final output.
-        
-        In the editor, user sees: \"プロローグ\" (backslash + quote)
-        This should become just: "プロローグ" (plain quotes)
-        """
         if not isinstance(text, str):
             return text
-        # Replace literal backslash+quote with just quote
-        # In Python: '\\\"' represents the 2-character sequence: \ and "
-        result = text.replace('\\\"', '"')
-        # Also handle the case where it's just backslash before quote
+        result = text.replace('\\\\', '\x00')
         result = result.replace('\\"', '"')
+        result = result.replace('\x00', '\\')
         return result
     
     def _normalize_translations(self, translations):
