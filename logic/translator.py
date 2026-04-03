@@ -591,29 +591,43 @@ class TranslatorThread(QThread):
     def _select_context_examples(self, completed, current_keys, limit=8):
         current_prefixes = set(k.split('.')[0] for k in current_keys if '.' in k)
 
+        current_texts = [self.items.get(k, '') for k in current_keys]
+        current_text_joined = ' '.join(t for t in current_texts if t)
+        significant_words = self._extract_significant_words(current_text_joined)
+
         scored = []
         for key, translation in completed.items():
             prefix = key.split('.')[0] if '.' in key else ''
             original = self.items.get(key, '')
             if not original or not translation:
                 continue
-            if prefix in current_prefixes:
-                if len(original) <= 120:
-                    scored.append((2, original, translation))
-            elif key in self.items:
-                if len(original) <= 80:
-                    scored.append((1, original, translation))
 
-        scored.sort(key=lambda x: -x[0])
+            word_overlap = sum(1 for w in significant_words if w in original)
+
+            if word_overlap > 0 and len(original) <= 120:
+                scored.append((10 + word_overlap, len(original), original, translation))
+            elif prefix in current_prefixes and len(original) <= 120:
+                scored.append((2, len(original), original, translation))
+            elif key in self.items and len(original) <= 80:
+                scored.append((1, len(original), original, translation))
+
+        scored.sort(key=lambda x: (-x[0], x[1]))
+
         seen = set()
         results = []
-        for _, s, t in scored:
+        for _, _, s, t in scored:
             if s not in seen:
                 seen.add(s)
                 results.append((s, t))
                 if len(results) >= limit:
                     break
         return results
+
+    @staticmethod
+    def _extract_significant_words(text):
+        words = re.findall(r'[A-Z][a-zA-Z]{2,}', text)
+        counted = collections.Counter(words)
+        return [w for w, _ in counted.most_common(20)]
 
     @staticmethod
     def _group_by_context(items):
