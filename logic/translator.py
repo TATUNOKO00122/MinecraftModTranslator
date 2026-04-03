@@ -606,11 +606,18 @@ class TranslatorThread(QThread):
 
         unique_items = {}
         group_to_keys = {}
+        duplicate_groups = []
+
         for (text, prefix), keys in groups.items():
-            unique_items[keys[0]] = text
+            if len(keys) == 1:
+                unique_items[keys[0]] = text
+            else:
+                for key in keys:
+                    unique_items[key] = text
+                duplicate_groups.append(keys)
             group_to_keys[(text, prefix)] = keys
 
-        return unique_items, group_to_keys
+        return unique_items, group_to_keys, duplicate_groups
 
     def _create_batches(self, items):
         batches = []
@@ -816,7 +823,7 @@ class TranslatorThread(QThread):
         if not translatable:
             return final_results, validation_results
         
-        unique_items, group_to_keys = self._group_by_context(translatable)
+        unique_items, group_to_keys, duplicate_groups = self._group_by_context(translatable)
         
         protected_items = {}
         variable_map = {}
@@ -847,6 +854,19 @@ class TranslatorThread(QThread):
         key_context = self._extract_key_context(list(items.keys()))
         if key_context:
             system_content += f"\n\n=== KEY CONTEXT ===\n{key_context}"
+
+        if duplicate_groups:
+            dup_examples = []
+            for grp in duplicate_groups[:5]:
+                dup_examples.append("  " + ", ".join(grp))
+            system_content += (
+                "\n\n=== DUPLICATE TEXT NOTE ===\n"
+                "Some source texts appear under multiple keys.\n"
+                "When keys suggest different contexts (name vs description, title vs tooltip), "
+                "provide context-appropriate translations for each key.\n"
+                "When keys clearly share the same purpose, identical translations are acceptable.\n"
+                "Duplicate groups:\n" + "\n".join(dup_examples)
+            )
 
         if self.glossary:
             batch_text = " ".join([str(v) for v in unique_items.values()])
@@ -955,14 +975,20 @@ class TranslatorThread(QThread):
             validation_results[key] = {"issues": ["Placeholder corruption — kept original"], "reviewed": False}
 
         for (text, prefix), keys in group_to_keys.items():
-            representative_key = keys[0]
-            if representative_key in unique_results:
-                result_text = unique_results[representative_key]
+            if len(keys) == 1:
+                if keys[0] in unique_results:
+                    final_results[keys[0]] = unique_results[keys[0]]
+            else:
+                representative_key = keys[0]
                 for key in keys:
-                    final_results[key] = result_text
+                    if key in unique_results:
+                        final_results[key] = unique_results[key]
+                    elif representative_key in unique_results:
+                        final_results[key] = unique_results[representative_key]
                 if representative_key in validation_results:
                     for key in keys[1:]:
-                        validation_results[key] = validation_results[representative_key].copy()
+                        if key not in validation_results:
+                            validation_results[key] = validation_results[representative_key].copy()
 
         self._apply_glossary_post_process(final_results, unique_items)
 
