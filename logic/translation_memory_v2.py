@@ -196,7 +196,7 @@ class TranslationMemoryV2:
                     source_hash = CASE WHEN excluded.source_hash != '' THEN excluded.source_hash ELSE translations.source_hash END,
                     origin = CASE
                         WHEN excluded.origin IN ('user', 'ai_corrected') THEN translations.origin
-                        ELSE excluded.origin END,
+                        ELSE excluded.origin END
             ''', batch_rows)
         
         conn.commit()

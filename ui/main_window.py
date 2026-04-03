@@ -560,9 +560,8 @@ class MainWindow(QMainWindow):
                 break
     
     def _count_translated(self, mod_data):
-        """Count items with translations (including same as original for MOD list)"""
         translations = mod_data["translations"]
-        return len([t for t in translations.values() if t])
+        return sum(1 for t in translations.values() if t)
     
     def refresh_all_mod_colors(self):
         for i in range(self.mod_list.count()):
@@ -579,6 +578,23 @@ class MainWindow(QMainWindow):
                 item.setText(self._format_mod_display(mod_name, translated, total))
                 item.setToolTip(f"{mod_name}\n原文: {char_count:,} 文字")
                 
+                if total > 0 and translated == total:
+                    item.setForeground(QColor("#4ade80"))
+                else:
+                    item.setForeground(QColor("#d4d4d4"))
+    
+    def _refresh_mod_list_items(self, mod_paths):
+        for i in range(self.mod_list.count()):
+            item = self.mod_list.item(i)
+            mod_path = item.data(Qt.UserRole)
+            if mod_path in mod_paths and mod_path in self.loaded_mods:
+                mod_data = self.loaded_mods[mod_path]
+                total = len(mod_data["original"])
+                translated = self._count_translated(mod_data)
+                char_count = mod_data.get("_char_count", 0)
+                mod_name = mod_data["name"]
+                item.setText(self._format_mod_display(mod_name, translated, total))
+                item.setToolTip(f"{mod_name}\n原文: {char_count:,} 文字")
                 if total > 0 and translated == total:
                     item.setForeground(QColor("#4ade80"))
                 else:
@@ -1061,14 +1077,41 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, event: QDropEvent):
         files = [u.toLocalFile() for u in event.mimeData().urls()]
-        for f in files:
-            try:
-                self.process_path(f)
-            except Exception as e:
-                print(f"[ERROR] dropEvent process_path failed: {e}")
-                import traceback
-                traceback.print_exc()
-                QMessageBox.critical(self, "エラー", f"ファイルの処理に失敗しました:\n{e}")
+        event.accept()
+        if not files:
+            return
+        if len(files) == 1:
+            QTimer.singleShot(0, lambda path=files[0]: self._process_dropped_file(path))
+        else:
+            QTimer.singleShot(0, lambda: self._process_dropped_files(files))
+
+    def _process_dropped_files(self, files):
+        for path in files:
+            if self._is_busy():
+                break
+            self._process_dropped_file(path)
+
+    def _is_busy(self):
+        if hasattr(self, 'rp_thread') and self.rp_thread and self.rp_thread.isRunning():
+            return True
+        if hasattr(self, 'translator_thread') and self.translator_thread and self.translator_thread.isRunning():
+            return True
+        if hasattr(self, '_stack') and self._stack.currentIndex() == 1:
+            return True
+        return False
+
+    def _process_dropped_file(self, path):
+        if self._is_busy():
+            self.statusBar().showMessage("処理中のため、ファイルのドロップをスキップしました", 5000)
+            return
+        try:
+            self.process_path(path)
+        except Exception as e:
+            print(f"[ERROR] dropEvent process_path failed: {e}")
+            import traceback
+            traceback.print_exc()
+            self._close_busy()
+            QMessageBox.critical(self, "エラー", f"ファイルの処理に失敗しました:\n{e}")
     
     def process_path(self, path, silent=False):
         if os.path.isdir(path):
@@ -1317,7 +1360,7 @@ class MainWindow(QMainWindow):
         self.rp_thread = ResourcePackImportThread(path, self.loaded_mods, self.file_handler, self.memory,
                                                    target_lang=self.settings_dialog.get_settings().get("target_lang", "ja_jp"))
         self.rp_thread.progress.connect(self.on_rp_import_progress)
-        self.rp_thread.finished.connect(self.on_rp_import_finished)
+        self.rp_thread.import_finished.connect(self.on_rp_import_finished)
         self.rp_thread.error.connect(self.on_rp_import_error)
         self.rp_thread.start()
 
@@ -1333,20 +1376,34 @@ class MainWindow(QMainWindow):
                 self._update_busy_message(f"リソースパックを読み込み中... ({current}/{total})")
                 self.statusBar().showMessage(f"リソースパックを読み込み中... ({current}/{total})")
 
-    def on_rp_import_finished(self, all_translations, applied_count, matched_mods):
+    def on_rp_import_finished(self, all_translations, applied_count, matched_mods, mod_updates):
+        import time as _time
         try:
+            t0 = _time.time()
             self.progress_bar.hide()
             self._close_busy()
             self.statusBar().showMessage("リソースパックの適用が完了しました", 3000)
 
-            if self.current_mod_path and self.current_mod_path in self.loaded_mods:
-                self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
+            for mod_path, updates in mod_updates.items():
+                if mod_path in self.loaded_mods:
+                    self.loaded_mods[mod_path]["translations"].update(updates)
+            print(f"[RP] apply translations: {_time.time() - t0:.2f}s, mods={len(mod_updates)}")
+
+            t1 = _time.time()
+            if self.current_mod_path and self.current_mod_path in mod_updates and self.current_mod_path in self.loaded_mods:
+                mod_data = self.loaded_mods[self.current_mod_path]
+                self.editor.load_data(mod_data["original"], translations=mod_data["translations"])
+                self.editor.review_status = mod_data.get("review_status", {})
+                self.editor.filter_table()
+            print(f"[RP] editor reload: {_time.time() - t1:.2f}s")
             
+            t2 = _time.time()
             self.mod_list.setUpdatesEnabled(False)
             try:
-                self.refresh_all_mod_colors()
+                self._refresh_mod_list_items(set(mod_updates.keys()))
             finally:
                 self.mod_list.setUpdatesEnabled(True)
+            print(f"[RP] mod list refresh: {_time.time() - t2:.2f}s")
 
             if matched_mods:
                 QMessageBox.information(self, "リソースパック適用", 
@@ -1488,7 +1545,6 @@ class MainWindow(QMainWindow):
     def _update_busy_message(self, message):
         if self._stack.currentIndex() == 1:
             self._busy_message.setText(message)
-            QApplication.processEvents()
 
     def _update_busy_progress(self, value, total=None):
         if self._stack.currentIndex() == 1:

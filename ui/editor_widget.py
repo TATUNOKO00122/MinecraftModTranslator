@@ -52,6 +52,16 @@ class EditorWidget(QWidget):
     searchAllModsRequested = Signal(str)
     selectionChanged = Signal(int)
 
+    _COLOR_TRANSLATED = QColor("#2f6b36")
+    _COLOR_TRANSLATED_FG = QColor("#ffffff")
+    _COLOR_ISSUES = QColor("#8b5a00")
+    _COLOR_ISSUES_FG = QColor("#ffcc66")
+    _COLOR_SAME = QColor("#6b5a2f")
+    _COLOR_SAME_FG = QColor("#ffffff")
+    _BRUSH_TRANSLATED = QBrush(_COLOR_TRANSLATED, Qt.SolidPattern)
+    _BRUSH_ISSUES = QBrush(_COLOR_ISSUES, Qt.SolidPattern)
+    _BRUSH_SAME = QBrush(_COLOR_SAME, Qt.SolidPattern)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         
@@ -128,9 +138,9 @@ class EditorWidget(QWidget):
         self.translations = {}
         self._key_to_row = {}
         
-    def load_data(self, data):
+    def load_data(self, data, translations=None):
         self.original_data = data
-        self.translations = {}
+        self.translations = translations if translations is not None else {}
         self.review_status = {}
         self.user_edited_keys = set()
         self.undo_stack.clear()
@@ -203,21 +213,17 @@ class EditorWidget(QWidget):
         self._programmatic_update = False
 
     def _update_row_color(self, row, translation, original):
-        key = self.table.item(row, 0).text()
-        review = self.review_status.get(key, {})
-        has_issues = bool(review.get("issues"))
-        is_reviewed = review.get("reviewed", False)
-        
         if translation and translation != original:
+            key = self.table.item(row, 0).text()
+            review = self.review_status.get(key, {})
+            has_issues = bool(review.get("issues"))
+            is_reviewed = review.get("reviewed", False)
             if has_issues and not is_reviewed:
-                color = QColor("#8b5a00")
-                text_color = QColor("#ffcc66")
+                brush, fg = self._BRUSH_ISSUES, self._COLOR_ISSUES_FG
             else:
-                color = QColor("#2f6b36")
-                text_color = QColor("#ffffff")
+                brush, fg = self._BRUSH_TRANSLATED, self._COLOR_TRANSLATED_FG
         elif translation and translation == original:
-            color = QColor("#6b5a2f")
-            text_color = QColor("#ffffff")
+            brush, fg = self._BRUSH_SAME, self._COLOR_SAME_FG
         else:
             for col in range(3):
                 item = self.table.item(row, col)
@@ -226,12 +232,11 @@ class EditorWidget(QWidget):
                     item.setData(Qt.ForegroundRole, None)
             return
         
-        brush = QBrush(color, Qt.SolidPattern)
         for col in range(3):
             item = self.table.item(row, col)
             if item:
                 item.setBackground(brush)
-                item.setForeground(text_color)
+                item.setForeground(fg)
 
     def filter_table(self):
         filter_text = self.search_input.text().lower()

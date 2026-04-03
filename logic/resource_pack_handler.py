@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import zipfile
 from PySide6.QtCore import QThread, Signal
 
@@ -72,13 +73,22 @@ class ModBatchLoadThread(QThread):
 
 class ResourcePackImportThread(QThread):
     progress = Signal(int, int, str) # current, total, phase
-    finished = Signal(dict, int, list) # all_translations, applied_count, matched_mods
+    import_finished = Signal(dict, int, list, dict) # all_translations, applied_count, matched_mods, mod_updates
     error = Signal(str)
 
     def __init__(self, path, loaded_mods, file_handler, memory, target_lang="ja_jp"):
         super().__init__()
         self.path = path
-        self.loaded_mods = loaded_mods
+        # メインスレッドのdictを直接操作しないよう、読み取り専用のスナップショットを作成
+        self.mod_snapshots = {
+            mod_path: {
+                "name": mod_data["name"],
+                "original_keys": set(mod_data["original"].keys()),
+                "target_file": mod_data["target_file"],
+                "type": mod_data.get("type", "mod"),
+            }
+            for mod_path, mod_data in loaded_mods.items()
+        }
         self.file_handler = file_handler
         self.memory = memory
         self.target_lang = target_lang
@@ -90,15 +100,22 @@ class ResourcePackImportThread(QThread):
     def run(self):
         all_translations = {}
         try:
+            t0 = time.time()
             self._read_pack_files(all_translations)
+            print(f"[RP] _read_pack_files: {time.time() - t0:.2f}s, files={len(all_translations)}")
 
             if not self.is_running or not all_translations:
-                self.finished.emit({}, 0, [])
+                self.import_finished.emit({}, 0, [], {})
                 return
 
+            t1 = time.time()
             self._match_and_apply(all_translations)
+            print(f"[RP] _match_and_apply: {time.time() - t1:.2f}s")
 
         except Exception as e:
+            print(f"[RP] ERROR: {e}")
+            import traceback
+            traceback.print_exc()
             self.error.emit(str(e))
 
     def _read_pack_files(self, all_translations):
@@ -110,6 +127,7 @@ class ResourcePackImportThread(QThread):
                         files_to_scan.append(os.path.join(root, f))
 
             total_files = len(files_to_scan)
+            progress_interval = max(1, total_files // 100)
             for i, full_path in enumerate(files_to_scan):
                 if not self.is_running:
                     return
@@ -125,13 +143,14 @@ class ResourcePackImportThread(QThread):
                             all_translations[rel_path] = translations
                 except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                     continue
-                self.progress.emit(i + 1, total_files, "read")
+                if (i + 1) % progress_interval == 0 or i + 1 == total_files:
+                    self.progress.emit(i + 1, total_files, "read")
         else:
             with zipfile.ZipFile(self.path, 'r') as zf:
                 namelist = zf.namelist()
                 files_to_scan = [f for f in namelist if f.endswith(f'{self.target_lang}.json') or f.endswith(f'{self.target_lang}.lang')]
                 total_files = len(files_to_scan)
-
+                progress_interval = max(1, total_files // 100)
                 for i, f in enumerate(files_to_scan):
                     if not self.is_running:
                         return
@@ -148,9 +167,11 @@ class ResourcePackImportThread(QThread):
                                 all_translations[f] = translations
                     except (json.JSONDecodeError, UnicodeDecodeError, OSError, KeyError):
                         continue
-                    self.progress.emit(i + 1, total_files, "read")
+                    if (i + 1) % progress_interval == 0 or i + 1 == total_files:
+                        self.progress.emit(i + 1, total_files, "read")
 
     def _match_and_apply(self, all_translations):
+        t0 = time.time()
         target_suffix_map = {}
         for pack_path in all_translations:
             parts = pack_path.replace('\\', '/').split('/')
@@ -169,30 +190,34 @@ class ResourcePackImportThread(QThread):
             pack_path: set(trans.keys())
             for pack_path, trans in all_translations.items()
         }
+        total_pack_keys = sum(len(k) for k in translation_key_sets.values())
+        print(f"[RP] index built: {time.time() - t0:.2f}s, suffixes={len(target_suffix_map)}, namespaces={len(namespace_map)}, pack_files={len(all_translations)}, total_keys={total_pack_keys}")
 
         ftbquest_paths = [
             pack_path for pack_path in all_translations
             if "ftbquests" in pack_path.replace('\\', '/')
         ]
 
-        mods_list = list(self.loaded_mods.items())
+        mods_list = list(self.mod_snapshots.items())
         total_mods = len(mods_list)
         applied_count = 0
         matched_mods = []
         memory_updates = {}
+        mod_updates = {}
         progress_interval = max(1, total_mods // 100)
 
-        for i, (mod_path, mod_data) in enumerate(mods_list):
+        t_match = time.time()
+        for i, (mod_path, snap) in enumerate(mods_list):
             if not self.is_running:
                 break
 
-            target_file = mod_data["target_file"].replace('\\', '/')
+            target_file = snap["target_file"].replace('\\', '/')
             ja_target = target_file.replace('en_us', self.target_lang)
-            mod_type = mod_data.get("type", "mod")
-            mod_keys = set(mod_data["original"].keys())
+            mod_type = snap["type"]
+            mod_keys = snap["original_keys"]
 
             found_translations, pack_path = self._find_matching_translations(
-                mod_data, ja_target, mod_type, all_translations,
+                snap, ja_target, mod_type, all_translations,
                 target_suffix_map, namespace_map,
                 translation_key_sets, ftbquest_paths
             )
@@ -203,21 +228,25 @@ class ResourcePackImportThread(QThread):
                 if matching_keys:
                     updates = {}
                     for key in matching_keys:
-                        mod_data["translations"][key] = found_translations[key]
                         updates[key] = found_translations[key]
+                    mod_updates[mod_path] = updates
                     applied_count += len(matching_keys)
-                    matched_mods.append(mod_data["name"])
+                    matched_mods.append(snap["name"])
                     memory_updates.update(updates)
 
             if (i + 1) % progress_interval == 0 or i + 1 == total_mods:
                 self.progress.emit(i + 1, total_mods, "match")
 
+        print(f"[RP] matching loop: {time.time() - t_match:.2f}s, matched={len(matched_mods)}/{total_mods}, keys={applied_count}")
+
+        t_mem = time.time()
         if memory_updates:
             self.memory.update(memory_updates)
+        print(f"[RP] memory update: {time.time() - t_mem:.2f}s, keys={len(memory_updates)}")
 
-        self.finished.emit(all_translations, applied_count, matched_mods)
+        self.import_finished.emit(all_translations, applied_count, matched_mods, mod_updates)
 
-    def _find_matching_translations(self, mod_data, ja_target, mod_type,
+    def _find_matching_translations(self, snap, ja_target, mod_type,
                                      all_translations, target_suffix_map, namespace_map,
                                      translation_key_sets=None, ftbquest_paths=None):
         ja_target_norm = ja_target.replace('\\', '/')
@@ -242,7 +271,7 @@ class ResourcePackImportThread(QThread):
                         return all_translations[pack_path], pack_path
 
         if mod_type == "ftbquest" and translation_key_sets is not None:
-            mod_keys = set(mod_data["original"].keys())
+            mod_keys = snap["original_keys"]
             for pack_path, keys in translation_key_sets.items():
                 if mod_keys & keys:
                     return all_translations[pack_path], pack_path

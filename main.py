@@ -1,6 +1,8 @@
 import sys
 import os
 import traceback
+import faulthandler
+faulthandler.enable()
 
 # Handle frozen environment (PyInstaller with --noconsole)
 # Redirect stdout/stderr to log file to capture crashes
