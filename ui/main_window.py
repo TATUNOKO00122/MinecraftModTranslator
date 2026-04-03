@@ -1771,7 +1771,6 @@ class MainWindow(QMainWindow):
 
     def start_batch_translate_all_mods(self):
         """Translate all visible MODs in the list (filtered MODs)."""
-        # Get visible (not hidden) MOD paths
         visible_mod_paths = []
         for i in range(self.mod_list.count()):
             item = self.mod_list.item(i)
@@ -1784,13 +1783,10 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "情報", "翻訳対象のMODがありません。")
             return
         
-        # Get current filter type to apply row-level filtering
         filter_type = self.mod_filter.currentData()
         
-        # Collect items from visible MODs based on filter condition
-        all_items = {}
+        self._batch_translate_queue = []
         total_char_count = 0
-        mod_item_counts = {}
         
         for mod_path in visible_mod_paths:
             mod_data = self.loaded_mods[mod_path]
@@ -1804,23 +1800,17 @@ class MainWindow(QMainWindow):
                 
                 translation = translations.get(key, "")
                 
-                # Apply row-level filter based on MOD list filter type
                 include_item = False
                 
                 if filter_type == "all" or filter_type == "mod" or filter_type == "ftbquest":
-                    # Include all items
                     include_item = True
                 elif filter_type == "incomplete":
-                    # Only untranslated items
                     include_item = not translation
                 elif filter_type == "complete":
-                    # All items from completed MODs (re-translate all)
                     include_item = True
                 elif filter_type == "has_same":
-                    # Only items where translation equals original
                     include_item = translation and translation == text
                 elif filter_type == "has_roman":
-                    # Only items where translation contains Roman letters (excluding color codes/placeholders)
                     if translation:
                         text_without_codes = re.sub(r'§.', '', translation)
                         text_without_codes = re.sub(r'%(\d+\$)?[sdfc]', '', text_without_codes)
@@ -1830,19 +1820,25 @@ class MainWindow(QMainWindow):
                     mod_items[key] = text
             
             if mod_items:
-                all_items.update(mod_items)
+                self._batch_translate_queue.append({
+                    'mod_path': mod_path,
+                    'items': mod_items,
+                    'mod_name': mod_data['name'],
+                    'source_type': mod_data.get('type'),
+                })
                 total_char_count += sum(len(str(v)) for v in mod_items.values())
-                mod_item_counts[mod_path] = len(mod_items)
         
-        if not all_items:
+        if not self._batch_translate_queue:
             QMessageBox.information(self, "情報", "翻訳対象の項目がありません。")
             return
         
-        # Confirm
+        total_items = sum(len(e['items']) for e in self._batch_translate_queue)
+        total_mods = len(self._batch_translate_queue)
+        
         confirm = QMessageBox.question(
             self, "全MOD一括翻訳",
-            f"表示中の {len(visible_mod_paths)} MODから\n"
-            f"{len(all_items)} 項目（{total_char_count:,} 文字）を翻訳しますか？\n\n"
+            f"表示中の {total_mods} MODから\n"
+            f"{total_items} 項目（{total_char_count:,} 文字）を翻訳しますか？\n\n"
             "(API使用量にご注意ください)",
             QMessageBox.Yes | QMessageBox.No
         )
@@ -1850,19 +1846,28 @@ class MainWindow(QMainWindow):
         if confirm != QMessageBox.Yes:
             return
         
-        # Save current MOD editor state
         if self.current_mod_path:
             self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
         
-        # Store batch translation info
-        self._batch_translate_mod_paths = visible_mod_paths
-        self._batch_translate_mod_item_counts = mod_item_counts
-        self._batch_translate_all_items = all_items
+        self._batch_total_mods = total_mods
+        self._batch_completed_mods = 0
+        self._batch_all_results = {}
+        self.translation_errors = []
         
-        # Start translation with batch mode flag
-        self._run_batch_translation(all_items)
+        self._start_next_batch_mod()
 
-    def _run_batch_translation(self, items):
+    def _start_next_batch_mod(self):
+        """キューから次のMODを取り出して翻訳開始。"""
+        if not hasattr(self, '_batch_translate_queue') or not self._batch_translate_queue:
+            return
+        
+        entry = self._batch_translate_queue.pop(0)
+        mod_path = entry['mod_path']
+        items = entry['items']
+        
+        self.current_mod_path = mod_path
+        self._batch_current_mod_path = mod_path
+        
         settings = self.settings_dialog.get_settings()
         api_key = settings["api_key"]
         model = settings["model"]
@@ -1872,23 +1877,25 @@ class MainWindow(QMainWindow):
             self.settings_dialog.show()
             return
 
-        self.translation_errors = []
-        self.translation_total_items = len(items)
         self.translation_original_items = items.copy()
         self._partial_saved_keys = set()
         
         glossary_terms = self.glossary.get_terms()
         parallel_count = settings.get("parallel_count", 3)
         
-        self.translator_thread = TranslatorThread(items, api_key, model, glossary_terms, parallel_count,
-                                                   memory=self.memory, mod_name="(batch)",
-                                                   target_lang=settings.get("target_lang", "ja_jp"),
-                                                   source_type=None)
+        mod_name = entry['mod_name']
+        
+        self.translator_thread = TranslatorThread(
+            items, api_key, model, glossary_terms, parallel_count,
+            memory=self.memory, mod_name=mod_name,
+            target_lang=settings.get("target_lang", "ja_jp"),
+            source_type=entry['source_type'],
+        )
         self.translator_thread.progress.connect(self.on_translation_progress)
-        self.translator_thread.finished.connect(self._on_batch_translate_finished)
-        self.translator_thread.stopped.connect(self._on_batch_translate_stopped)
+        self.translator_thread.finished.connect(self._on_batch_mod_finished)
+        self.translator_thread.stopped.connect(self._on_batch_mod_stopped)
         self.translator_thread.error.connect(self.on_translation_error)
-        self.translator_thread.partial_save.connect(self._on_batch_partial_save)
+        self.translator_thread.partial_save.connect(self._on_batch_mod_partial_save)
         self.translator_thread.validation_finished.connect(self.on_validation_finished)
         self.translator_thread.consistency_warnings.connect(self.on_consistency_warnings)
         self.translator_thread.start()
@@ -1897,104 +1904,102 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.show()
         self.stop_translation_btn.show()
-        self._show_busy("一括翻訳中", f"一括翻訳中... 0/{len(items)}", cancellable_thread=self.translator_thread)
-        self.statusBar().showMessage(f"一括翻訳中... 0/{len(items)} (APIリクエスト中...)")
+        self._show_busy(
+            "一括翻訳中",
+            f"MOD翻訳中 ({self._batch_completed_mods + 1}/{self._batch_total_mods}): {mod_name}",
+            cancellable_thread=self.translator_thread
+        )
+        self.statusBar().showMessage(
+            f"一括翻訳中 ({self._batch_completed_mods + 1}/{self._batch_total_mods}): {mod_name}"
+        )
 
-    def _on_batch_partial_save(self, partial_results):
-        if not partial_results or not hasattr(self, '_batch_translate_mod_paths') or not self._batch_translate_mod_paths:
+    def _on_batch_mod_partial_save(self, partial_results):
+        if not partial_results:
+            return
+        mod_path = getattr(self, '_batch_current_mod_path', None)
+        if not mod_path or mod_path not in self.loaded_mods:
             return
         
-        for mod_path in self._batch_translate_mod_paths:
-            mod_data = self.loaded_mods[mod_path]
-            original = mod_data["original"]
-            for key in original.keys():
-                if key in partial_results:
-                    mod_data["translations"][key] = partial_results[key]
+        mod_data = self.loaded_mods[mod_path]
+        original = mod_data["original"]
+        for key in original.keys():
+            if key in partial_results:
+                mod_data["translations"][key] = partial_results[key]
         
-        if self.current_mod_path in self._batch_translate_mod_paths:
+        if self.current_mod_path == mod_path:
             new_results = {k: v for k, v in partial_results.items()
-                           if k not in self._partial_saved_keys and k in self.loaded_mods[self.current_mod_path]["original"]}
+                           if k not in self._partial_saved_keys and k in original}
             if new_results:
                 self.editor.update_translations(new_results)
                 self._partial_saved_keys.update(new_results.keys())
-        
-        saved_count = len(self._partial_saved_keys)
-        self.statusBar().showMessage(f"一括翻訳自動保存: {saved_count} 件保存済み", 3000)
 
-    def _on_batch_translate_finished(self, results):
-        for mod_path in self._batch_translate_mod_paths:
-            mod_data = self.loaded_mods[mod_path]
-            original = mod_data["original"]
-            
-            for key in original.keys():
-                if key in results:
-                    mod_data["translations"][key] = results[key]
+    def _on_batch_mod_finished(self, results):
+        mod_path = getattr(self, '_batch_current_mod_path', None)
+        if mod_path and mod_path in self.loaded_mods:
+            self.loaded_mods[mod_path]["translations"].update(results)
+            if self.current_mod_path == mod_path:
+                self.editor.update_translations(results)
         
-        if self.current_mod_path in self._batch_translate_mod_paths:
-            self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
-        
-        self.progress_bar.hide()
-        self.stop_translation_btn.hide()
-        self._close_busy()
-        self.statusBar().showMessage("一括翻訳完了", 3000)
+        self._batch_all_results.update(results)
+        self._batch_completed_mods += 1
         
         self.refresh_all_mod_colors()
         
-        if self.translation_errors:
-            error_count = len(self.translation_errors)
-            details = "\n".join(self.translation_errors[:3])
-            if error_count > 3:
-                details += f"\n...他 {error_count - 3} 件"
-                
-            QMessageBox.warning(self, "完了 (一部エラーあり)", 
-                                f"一括翻訳完了。{len(results)} 件翻訳、{error_count} 件エラー。\n\n{details}")
+        if self._batch_translate_queue:
+            self._start_next_batch_mod()
         else:
-            QMessageBox.information(self, "完了", 
-                                    f"{len(self._batch_translate_mod_paths)} MODの一括翻訳が完了しました！\n"
-                                    f"翻訳件数: {len(results)} 件")
+            self._finish_batch_translate()
+
+    def _on_batch_mod_stopped(self, partial_results):
+        mod_path = getattr(self, '_batch_current_mod_path', None)
+        if mod_path and partial_results and mod_path in self.loaded_mods:
+            self.loaded_mods[mod_path]["translations"].update(partial_results)
+            if self.current_mod_path == mod_path:
+                self.editor.update_translations(partial_results)
         
-        # Cleanup
-        self._batch_translate_mod_paths = None
-        self._batch_translate_mod_item_counts = None
-        self._batch_translate_all_items = None
-        self.translator_thread = None
-        self.translation_original_items = None
+        self._batch_all_results.update(partial_results or {})
+        self.refresh_all_mod_colors()
+        self._finish_batch_translate(interrupted=True, partial_results=partial_results)
 
-    def _on_batch_translate_stopped(self, partial_results):
-        if partial_results and hasattr(self, '_batch_translate_mod_paths') and self._batch_translate_mod_paths:
-            for mod_path in self._batch_translate_mod_paths:
-                mod_data = self.loaded_mods[mod_path]
-                original = mod_data["original"]
-                
-                for key in original.keys():
-                    if key in partial_results:
-                        mod_data["translations"][key] = partial_results[key]
-            
-            if self.current_mod_path in self._batch_translate_mod_paths:
-                self.editor.update_translations(self.loaded_mods[self.current_mod_path]["translations"])
-
+    def _finish_batch_translate(self, interrupted=False, partial_results=None):
         self.progress_bar.hide()
         self.stop_translation_btn.hide()
         self.stop_translation_btn.setEnabled(True)
         self.stop_translation_btn.setText("中断")
         self._close_busy()
         
-        self.refresh_all_mod_colors()
+        completed_count = len(self._batch_all_results)
+        total_mods = getattr(self, '_batch_total_mods', 0)
+        completed_mods = getattr(self, '_batch_completed_mods', 0)
         
-        # Show message
-        if partial_results:
-            QMessageBox.information(self, "中断", 
-                f"一括翻訳を中断しました。\n{len(partial_results)} 件の翻訳は保存されました。")
+        if interrupted:
+            if partial_results:
+                QMessageBox.information(self, "中断",
+                    f"一括翻訳を中断しました。\n"
+                    f"{completed_mods}/{total_mods} MOD、{completed_count} 件の翻訳は保存されました。")
+            else:
+                QMessageBox.information(self, "中断", "一括翻訳を中断しました。")
+            self.statusBar().showMessage("一括翻訳が中断されました", 3000)
         else:
-            QMessageBox.information(self, "中断", "一括翻訳を中断しました。")
+            self.statusBar().showMessage("一括翻訳完了", 3000)
+            if self.translation_errors:
+                error_count = len(self.translation_errors)
+                details = "\n".join(self.translation_errors[:3])
+                if error_count > 3:
+                    details += f"\n...他 {error_count - 3} 件"
+                QMessageBox.warning(self, "完了 (一部エラーあり)",
+                    f"{total_mods} MODの一括翻訳完了。{completed_count} 件翻訳、{error_count} 件エラー。\n\n{details}")
+            else:
+                QMessageBox.information(self, "完了",
+                    f"{total_mods} MODの一括翻訳が完了しました！\n翻訳件数: {completed_count} 件")
         
-        # Cleanup
-        self._batch_translate_mod_paths = None
-        self._batch_translate_mod_item_counts = None
-        self._batch_translate_all_items = None
+        self._batch_translate_queue = None
+        self._batch_total_mods = None
+        self._batch_completed_mods = None
+        self._batch_all_results = None
+        self._batch_current_mod_path = None
         self.translator_thread = None
         self.translation_original_items = None
-        self.statusBar().showMessage("一括翻訳が中断されました", 3000)
 
 
     def show_frequent_terms(self):

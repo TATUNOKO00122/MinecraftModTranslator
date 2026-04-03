@@ -466,6 +466,49 @@ class TranslatorThread(QThread):
         self.save_interval = 5
         self.target_lang = target_lang
         self.source_type = source_type
+        self._completed_translations = {}
+
+    def _select_context_examples(self, completed, current_keys, limit=8):
+        current_prefixes = set(k.split('.')[0] for k in current_keys if '.' in k)
+
+        scored = []
+        for key, translation in completed.items():
+            prefix = key.split('.')[0] if '.' in key else ''
+            original = self.items.get(key, '')
+            if not original or not translation:
+                continue
+            if prefix in current_prefixes:
+                if len(original) <= 120:
+                    scored.append((2, original, translation))
+            elif key in self.items:
+                if len(original) <= 80:
+                    scored.append((1, original, translation))
+
+        scored.sort(key=lambda x: -x[0])
+        seen = set()
+        results = []
+        for _, s, t in scored:
+            if s not in seen:
+                seen.add(s)
+                results.append((s, t))
+                if len(results) >= limit:
+                    break
+        return results
+
+    @staticmethod
+    def _group_by_context(items):
+        groups = {}
+        for key, text in items.items():
+            prefix = key.split('.')[0] if '.' in key else ''
+            groups.setdefault((text, prefix), []).append(key)
+
+        unique_items = {}
+        text_to_keys = {}
+        for (text, prefix), keys in groups.items():
+            unique_items[keys[0]] = text
+            text_to_keys.setdefault(text, []).extend(keys)
+
+        return unique_items, text_to_keys
 
     def _create_batches(self, items):
         batches = []
@@ -501,6 +544,8 @@ class TranslatorThread(QThread):
         total_items = len(self.items)
         processed = 0
         
+        self._completed_translations = {}
+        
         if self.parallel_count == 1:
             for batch_idx, batch_items in enumerate(batches):
                 if not self.is_running:
@@ -508,10 +553,14 @@ class TranslatorThread(QThread):
                     return
                 
                 try:
-                    translated_batch, batch_validation = self.translate_batch_with_retry(batch_items)
+                    translated_batch, batch_validation = self.translate_batch_with_retry(
+                        batch_items,
+                        completed_context=self._completed_translations
+                    )
                     results.update(translated_batch)
                     validation_results.update(batch_validation)
                     self._partial_results = results
+                    self._completed_translations.update(translated_batch)
                     
                     self._batches_since_save += 1
                     if self._batches_since_save >= self.save_interval:
@@ -559,10 +608,13 @@ class TranslatorThread(QThread):
             
             chunk_end = min(batch_index + current_parallel, len(batches))
             batch_chunk = [(i, batches[i]) for i in range(batch_index, chunk_end)]
+            chunk_results = {}
             
             with ThreadPoolExecutor(max_workers=current_parallel) as executor:
                 future_to_batch = {
-                    executor.submit(self._translate_batch_safe, idx, batch_items): (idx, batch_items)
+                    executor.submit(
+                        self._translate_batch_safe, idx, batch_items, chunk_results
+                    ): (idx, batch_items)
                     for idx, batch_items in batch_chunk
                 }
                 
@@ -578,6 +630,7 @@ class TranslatorThread(QThread):
                             results.update(translated_batch)
                             validation_results.update(batch_validation)
                             self._partial_results = results
+                            chunk_results.update(translated_batch)
                         
                         if rate_limited and current_parallel > 1:
                             current_parallel = max(1, current_parallel - 1)
@@ -595,28 +648,31 @@ class TranslatorThread(QThread):
                 self._progressive_save(results, {}, validation_results)
                 batches_since_save = 0
             
+            self._completed_translations.update(chunk_results)
             batch_index = chunk_end
             
             if batch_index < len(batches):
                 time.sleep(0.3)
     
-    def _translate_batch_safe(self, batch_idx, items):
+    def _translate_batch_safe(self, batch_idx, items, chunk_results=None):
         rate_limited = False
         try:
-            result, validation = self.translate_batch_with_retry(items)
+            result, validation = self.translate_batch_with_retry(
+                items, completed_context=chunk_results
+            )
             return result, validation, rate_limited
         except Exception as e:
             if "429" in str(e):
                 rate_limited = True
             raise
 
-    def translate_batch_with_retry(self, items, max_retries=3):
+    def translate_batch_with_retry(self, items, max_retries=3, completed_context=None):
         retries = 0
         while retries < max_retries:
             if not self.is_running:
                 return {}, {}
             try:
-                return self.translate_batch(items)
+                return self.translate_batch(items, completed_context=completed_context)
             except requests.exceptions.HTTPError as e:
                 if e.response.status_code == 429:
                     retries += 1
@@ -632,7 +688,7 @@ class TranslatorThread(QThread):
                 
         raise Exception("Max retries exceeded")
 
-    def translate_batch(self, items):
+    def translate_batch(self, items, completed_context=None):
         if not items:
             return {}, {}
         
@@ -652,10 +708,7 @@ class TranslatorThread(QThread):
         if not translatable:
             return final_results, validation_results
         
-        text_to_keys = {}
-        for key, text in translatable.items():
-            text_to_keys.setdefault(text, []).append(key)
-        unique_items = {keys[0]: text for text, keys in text_to_keys.items()}
+        unique_items, text_to_keys = self._group_by_context(translatable)
         
         protected_items = {}
         variable_map = {}
@@ -713,6 +766,20 @@ class TranslatorThread(QThread):
                         )
             except Exception as e:
                 print(f"TM few-shot lookup skipped: {e}")
+
+        if completed_context:
+            context_examples = self._select_context_examples(
+                completed_context, list(items.keys()), limit=8
+            )
+            if context_examples:
+                examples_text = "\n".join(
+                    [f'  "{s}" → "{t}"' for s, t in context_examples]
+                )
+                system_content += (
+                    f"\n\n=== PREVIOUSLY TRANSLATED IN THIS SESSION ===\n"
+                    f"These items were already translated. Use the SAME terminology:\n"
+                    f"{examples_text}\n"
+                )
 
         data = {
             "model": self.model,
@@ -899,18 +966,25 @@ class TranslatorThread(QThread):
             return
         
         try:
+            FATAL_ISSUES = {
+                "Placeholder corruption",
+                "Placeholder count mismatch",
+                "Nested braces",
+                "Unreplaced placeholder",
+            }
+            QUALITY_ISSUES = {
+                "untranslated",
+                "longer than",
+                "shorter than",
+                "Glossary term missing",
+            }
+            
             saveable = results
             if validation_results:
-                BLOCKED_ISSUES = {
-                    "Placeholder corruption",
-                    "Placeholder count mismatch",
-                    "Nested braces",
-                    "Unreplaced placeholder",
-                }
                 saveable = {
                     k: v for k, v in results.items()
                     if k not in validation_results or not any(
-                        any(bad in issue for bad in BLOCKED_ISSUES)
+                        any(bad in issue for bad in FATAL_ISSUES | QUALITY_ISSUES)
                         for issue in validation_results[k].get("issues", [])
                     )
                 }
@@ -923,7 +997,7 @@ class TranslatorThread(QThread):
                 )
                 self.memory.update(saveable, origin='ai')
                 print(f"Progressive save: {len(saveable)}/{len(results)} translations saved "
-                      f"({len(results) - len(saveable)} filtered)")
+                      f"({len(results) - len(saveable)} quality-filtered)")
             
             self.partial_save.emit(results)
         except Exception as e:
