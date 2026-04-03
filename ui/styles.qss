@@ -323,3 +323,19 @@ QLabel#ModLabel {
 QFrame#BusySeparator {
     color: #3d3d3d;
 }
+
+QLabel#BusyTokenLabel {
+    font-size: 13px;
+    color: #cccccc;
+    background: transparent;
+    border: none;
+    padding: 4px;
+}
+
+QLabel#CumulativeTokenLabel {
+    font-size: 12px;
+    color: #888888;
+    padding: 2px 8px;
+    background: transparent;
+    border: none;
+}

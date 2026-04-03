@@ -8,7 +8,7 @@ import ctypes
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QToolBar, 
                                 QFileDialog, QMessageBox, QLabel, QProgressBar, QMenu, QSplitter, QListWidget, QApplication,
                                 QDialog, QDialogButtonBox, QListWidgetItem, QToolButton, QComboBox, QPushButton,
-                                QStackedWidget, QFrame, QCheckBox)
+                                QStackedWidget, QFrame, QCheckBox, QSizePolicy)
 from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QKeySequence, QShortcut, QIcon, QColor
 from PySide6.QtCore import Qt, QTimer
 
@@ -93,6 +93,13 @@ class MainWindow(QMainWindow):
         self.translation_errors = []
         self._dirty = False
         
+        self._session_token_usage = {
+            'prompt_tokens': 0,
+            'completion_tokens': 0,
+            'total_tokens': 0,
+            'api_calls': 0,
+        }
+        
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self._autosave)
 
@@ -155,6 +162,15 @@ class MainWindow(QMainWindow):
         self.apply_snbt_btn.clicked.connect(self.apply_ftbquest_snbt)
         self.apply_snbt_action = self.toolbar.addWidget(self.apply_snbt_btn)
         self.apply_snbt_action.setVisible(False)
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.toolbar.addWidget(spacer)
+
+        self._cumulative_token_label = QLabel("Token: 0")
+        self._cumulative_token_label.setObjectName("CumulativeTokenLabel")
+        self._cumulative_token_label.setToolTip("セッション累計トークン消費量")
+        self.toolbar.addWidget(self._cumulative_token_label)
 
         # Splitter Layout
         splitter = QSplitter(Qt.Horizontal)
@@ -286,6 +302,14 @@ class MainWindow(QMainWindow):
         busy_layout.addWidget(self._busy_progress, alignment=Qt.AlignCenter)
 
         busy_layout.addSpacing(20)
+
+        self._busy_token_label = QLabel("")
+        self._busy_token_label.setAlignment(Qt.AlignCenter)
+        self._busy_token_label.setObjectName("BusyTokenLabel")
+        self._busy_token_label.hide()
+        busy_layout.addWidget(self._busy_token_label)
+
+        busy_layout.addSpacing(8)
 
         self._busy_cancel_btn = QPushButton("キャンセル")
         self._busy_cancel_btn.setFixedSize(120, 32)
@@ -1535,6 +1559,19 @@ class MainWindow(QMainWindow):
         else:
             self._busy_cancel_btn.hide()
             self._cancellable_thread = None
+
+        if self._session_token_usage.get('total_tokens', 0) > 0:
+            su = self._session_token_usage
+            self._busy_token_label.setText(
+                f"Token消費 — 入力: {self._format_tokens(su['prompt_tokens'])} / "
+                f"出力: {self._format_tokens(su['completion_tokens'])} / "
+                f"合計: {self._format_tokens(su['total_tokens'])}  "
+                f"(API: {su['api_calls']}回)"
+            )
+            self._busy_token_label.show()
+        else:
+            self._busy_token_label.hide()
+
         self._stack.setCurrentIndex(1)
         QApplication.processEvents()
 
@@ -1705,12 +1742,30 @@ class MainWindow(QMainWindow):
 
     def on_token_stats(self, stats):
         self._last_token_stats = stats
-        prompt = self._format_tokens(stats.get('prompt_tokens', 0))
-        completion = self._format_tokens(stats.get('completion_tokens', 0))
-        total = self._format_tokens(stats.get('total_tokens', 0))
-        calls = stats.get('api_calls', 0)
+
+        self._session_token_usage['prompt_tokens'] += stats.get('prompt_tokens', 0)
+        self._session_token_usage['completion_tokens'] += stats.get('completion_tokens', 0)
+        self._session_token_usage['total_tokens'] += stats.get('total_tokens', 0)
+        self._session_token_usage['api_calls'] += 1
+
+        prompt = self._format_tokens(self._session_token_usage['prompt_tokens'])
+        completion = self._format_tokens(self._session_token_usage['completion_tokens'])
+        total = self._format_tokens(self._session_token_usage['total_tokens'])
+        calls = self._session_token_usage['api_calls']
+
+        self._cumulative_token_label.setText(f"Token: {total}")
+        self._cumulative_token_label.setToolTip(
+            f"セッション累計 — 入力: {prompt} / 出力: {completion} / 合計: {total}  (API: {calls}回)"
+        )
+
+        if self._stack.currentIndex() == 1:
+            self._busy_token_label.setText(
+                f"Token消費 — 入力: {prompt} / 出力: {completion} / 合計: {total}  (API: {calls}回)"
+            )
+            self._busy_token_label.show()
+
         self.statusBar().showMessage(
-            f"トークン消費 — 入力: {prompt} / 出力: {completion} / 合計: {total}  (API呼び出し: {calls}回)", 5000
+            f"トークン消費 — 入力: {prompt} / 出力: {completion} / 合計: {total}  (API: {calls}回)", 5000
         )
 
     def mark_selected_reviewed(self):
