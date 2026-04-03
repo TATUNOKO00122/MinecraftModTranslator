@@ -1933,6 +1933,18 @@ class MainWindow(QMainWindow):
                 self.editor.update_translations(new_results)
                 self._partial_saved_keys.update(new_results.keys())
 
+        saved_count = len(self._partial_saved_keys)
+        total_items = getattr(self, 'translation_total_items', 0)
+        remaining_mods = len(self._batch_translate_queue) if self._batch_translate_queue else 0
+
+        self._update_busy_message(
+            f"一括翻訳中... {saved_count}/{total_items} "
+            f"(残り {remaining_mods} MOD)"
+        )
+        self.statusBar().showMessage(
+            f"一括翻訳: {saved_count}/{total_items} 件完了 (残り {remaining_mods} MOD)", 3000
+        )
+
     def _on_batch_mod_finished(self, results):
         mod_path = getattr(self, '_batch_current_mod_path', None)
         if mod_path and mod_path in self.loaded_mods:
@@ -2194,8 +2206,7 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"翻訳完了: {result_count} 件", 3000)
         
-        self._show_local_term_suggestion(results)
-        self._show_term_extraction_dialog(results)
+        self._show_post_translation_summary(results)
         
         self.translator_thread = None
         self.translation_original_items = None
@@ -2299,6 +2310,58 @@ class MainWindow(QMainWindow):
         self.ai_extractor_thread.progress.connect(self._on_ai_extraction_progress)
         self.ai_extractor_thread.start()
     
+    def _show_post_translation_summary(self, translated_items):
+        """翻訳完了後の用語提案を1つの統合ダイアログにまとめる。"""
+
+        local_consistent = {}
+        local_inconsistent = {}
+        if hasattr(self, 'translation_original_items') and self.translation_original_items:
+            local_consistent, local_inconsistent = extract_all_term_candidates(
+                self.translation_original_items,
+                translated_items,
+                self.glossary.get_terms()
+            )
+
+        total_suggestions = len(local_consistent) + len(local_inconsistent)
+
+        if total_suggestions == 0:
+            return
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("翻訳完了・用語提案")
+
+        summary_text = f"翻訳完了: {len(translated_items)} 件\n\n"
+
+        if local_consistent:
+            summary_text += f"一貫した用語: {len(local_consistent)} 件\n"
+        if local_inconsistent:
+            summary_text += f"翻訳ブレあり: {len(local_inconsistent)} 件\n"
+
+        summary_text += "\n辞書に追加する用語を確認しますか？"
+        msg.setText(summary_text)
+
+        btn_review = msg.addButton("辞書を確認", QMessageBox.AcceptRole)
+        btn_ai = msg.addButton("AIで詳細抽出", QMessageBox.ActionRole)
+        btn_skip = msg.addButton("閉じる", QMessageBox.RejectRole)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+
+        if clicked == btn_review:
+            dialog = TermExtractionDialog(
+                local_consistent, self.glossary, self,
+                inconsistent_terms=local_inconsistent
+            )
+            if dialog.exec():
+                added = dialog.get_added_count()
+                if added > 0:
+                    self.statusBar().showMessage(
+                        f"{added} 件を辞書に追加しました", 5000
+                    )
+
+        elif clicked == btn_ai:
+            self._start_ai_term_extraction(translated_items)
+
     def _show_local_term_suggestion(self, translated_items):
         """翻訳完了後にローカルで一貫性のある用語と翻訳ブレを抽出し、辞書提案ダイアログを表示する。"""
         if not hasattr(self, 'translation_original_items') or not self.translation_original_items:

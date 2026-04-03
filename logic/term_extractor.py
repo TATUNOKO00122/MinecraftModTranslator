@@ -393,6 +393,23 @@ _SINGLE_CAP_WORD_RE = re.compile(r'\b([A-Z][a-z]{2,})\b')
 _BRACKET_TERM_RE = re.compile(r'[\[<]([A-Z][A-Za-z\s]{2,})[\]>]')
 _QUOTED_TERM_RE = re.compile(r'["\u201c]([A-Z][A-Za-z\s]{2,}?)["\u201d]')
 
+_TITLE_CASE_NOISE = frozenset({
+    'The Player', 'This Item', 'Each Level', 'Per Level',
+    'All Players', 'No Damage', 'After Death', 'Before Use',
+    'Right Click', 'Left Click', 'Shift Right', 'When Held',
+    'While Held', 'If Used', 'When Broken', 'On Hit',
+    'On Kill', 'On Use', 'To Use', 'To Craft', 'Can Be',
+    'Has Been', 'Will Be', 'Is Not', 'Do Not', 'Does Not',
+    'In Order', 'At Least', 'At Most', 'Up To', 'Out Of',
+})
+
+_VERB_STARTERS = frozenset({
+    'deals', 'grants', 'gives', 'takes', 'causes',
+    'applies', 'removes', 'increases', 'decreases',
+    'reduces', 'adds', 'sets', 'spawns', 'summons',
+    'teleports', 'heals', 'damages', 'kills',
+})
+
 
 def extract_frequent_terms_from_original(original_items, min_count=2,
                                          existing_glossary=None):
@@ -480,8 +497,10 @@ def extract_frequent_terms_from_original(original_items, min_count=2,
         if src["count"] >= min_count:
             results.append((term, src["count"], src["keys"]))
 
-    results.sort(key=lambda x: (x[1] * 10 + term_sources[x[0]]["priority"], x[0]),
-                 reverse=True)
+    results.sort(
+        key=lambda x: (x[1] * term_sources[x[0]]["priority"], x[1], x[0]),
+        reverse=True
+    )
 
     return results
 
@@ -497,10 +516,15 @@ def _is_valid_frequent_term(text, existing_glossary):
         return False
     if lower in _SKIP_TERMS_LOWER:
         return False
+    if stripped in _TITLE_CASE_NOISE:
+        return False
     words = set(lower.split())
     if words <= _COMMON_WORDS:
         return False
     if re.match(r'^[A-Z][a-z]+$', stripped) and lower in _COMMON_WORDS:
+        return False
+    word_list = lower.split()
+    if len(word_list) >= 3 and word_list[0] in _VERB_STARTERS:
         return False
     return True
 
