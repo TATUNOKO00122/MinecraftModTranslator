@@ -23,17 +23,19 @@ class TranslationMemoryV2:
     def __init__(self, db_path: str = "translation_memory.db"):
         self.db_path = db_path
         self.legacy_json_path = db_path.replace('.db', '.json')
-        self._conn = None
-        self._lock = threading.Lock()
+        self._local = threading.local()
+        self._write_lock = threading.Lock()
         self._init_db()
         self._migrate_from_json_if_needed()
     
     def _get_connection(self) -> sqlite3.Connection:
-        """Get or create database connection."""
-        if self._conn is None:
-            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-        return self._conn
+        """スレッドごとに独立した接続を返す。"""
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            conn = sqlite3.connect(self.db_path, check_same_thread=True)
+            conn.row_factory = sqlite3.Row
+            conn.execute('PRAGMA journal_mode=WAL')
+            self._local.conn = conn
+        return self._local.conn
     
     def _init_db(self):
         """Initialize database schema."""
@@ -168,38 +170,39 @@ class TranslationMemoryV2:
         if not translations:
             return
         
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        now = datetime.now().isoformat()
-        
-        batch_rows = []
-        for key, translation in translations.items():
-            if not translation:
-                continue
+        with self._write_lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            now = datetime.now().isoformat()
             
-            source = sources.get(key, '') if sources else ''
-            category = self._detect_category(key)
-            source_hash = self._hash_text(source)
-            batch_rows.append((key, source, translation, mod_name, category, model, now, source_hash, origin))
-        
-        if batch_rows:
-            cursor.executemany('''
-                INSERT INTO translations (key, source, translation, mod_name, category, model, translated_at, source_hash, origin)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET
-                    translation = excluded.translation,
-                    mod_name = COALESCE(excluded.mod_name, translations.mod_name),
-                    category = excluded.category,
-                    model = COALESCE(excluded.model, translations.model),
-                    translated_at = excluded.translated_at,
-                    source = CASE WHEN excluded.source != '' THEN excluded.source ELSE translations.source END,
-                    source_hash = CASE WHEN excluded.source_hash != '' THEN excluded.source_hash ELSE translations.source_hash END,
-                    origin = CASE
-                        WHEN excluded.origin IN ('user', 'ai_corrected') THEN translations.origin
-                        ELSE excluded.origin END
-            ''', batch_rows)
-        
-        conn.commit()
+            batch_rows = []
+            for key, translation in translations.items():
+                if not translation:
+                    continue
+                
+                source = sources.get(key, '') if sources else ''
+                category = self._detect_category(key)
+                source_hash = self._hash_text(source)
+                batch_rows.append((key, source, translation, mod_name, category, model, now, source_hash, origin))
+            
+            if batch_rows:
+                cursor.executemany('''
+                    INSERT INTO translations (key, source, translation, mod_name, category, model, translated_at, source_hash, origin)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET
+                        translation = excluded.translation,
+                        mod_name = COALESCE(excluded.mod_name, translations.mod_name),
+                        category = excluded.category,
+                        model = COALESCE(excluded.model, translations.model),
+                        translated_at = excluded.translated_at,
+                        source = CASE WHEN excluded.source != '' THEN excluded.source ELSE translations.source END,
+                        source_hash = CASE WHEN excluded.source_hash != '' THEN excluded.source_hash ELSE translations.source_hash END,
+                        origin = CASE
+                            WHEN excluded.origin IN ('user', 'ai_corrected') THEN translations.origin
+                            ELSE excluded.origin END
+                ''', batch_rows)
+            
+            conn.commit()
     
     def get(self, key: str) -> Optional[str]:
         """Get translation by key."""
@@ -284,14 +287,15 @@ class TranslationMemoryV2:
         if not keys:
             return
         
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        placeholders = self._build_in_clause(len(keys))
-        cursor.execute(
-            f'UPDATE translations SET reviewed = ? WHERE key IN ({placeholders})',
-            [1 if reviewed else 0] + keys
-        )
-        conn.commit()
+        with self._write_lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            placeholders = self._build_in_clause(len(keys))
+            cursor.execute(
+                f'UPDATE translations SET reviewed = ? WHERE key IN ({placeholders})',
+                [1 if reviewed else 0] + keys
+            )
+            conn.commit()
     
     def get_unreviewed_count(self) -> int:
         """Get count of unreviewed translations."""
@@ -406,9 +410,8 @@ class TranslationMemoryV2:
             )
             params = like_params
 
-        with self._lock:
-            cursor.execute(query, params)
-            candidates = cursor.fetchall()
+        cursor.execute(query, params)
+        candidates = cursor.fetchall()
 
         if not candidates:
             return []
@@ -479,14 +482,16 @@ class TranslationMemoryV2:
     
     def save(self):
         """Commit any pending changes (for compatibility with v1 API)."""
-        if self._conn:
-            self._conn.commit()
+        conn = getattr(self._local, 'conn', None)
+        if conn:
+            conn.commit()
     
     def close(self):
         """Close database connection."""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        conn = getattr(self._local, 'conn', None)
+        if conn:
+            conn.close()
+            self._local.conn = None
 
 
 # Compatibility wrapper for gradual migration

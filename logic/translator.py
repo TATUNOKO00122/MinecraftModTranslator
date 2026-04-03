@@ -137,22 +137,25 @@ def protect_variables(text):
 
 def _protect_numbers(text, variables, tag_to_index):
     """変数パターン置換後のテキストから、プレースホルダ以外の数値を保護する。"""
-    parts = PLACEHOLDER_RE.split(text)
-    result_parts = []
-    for part in parts:
-        if PLACEHOLDER_RE.fullmatch(part):
-            result_parts.append(part)
-            continue
+    result = ''
+    last_end = 0
 
-        def replacer(match):
-            tag = uuid.uuid4().hex[:12]
-            idx = len(variables)
-            variables.append(match.group())
-            tag_to_index[tag] = idx
-            return f'⟨{tag}⟩'
+    def _replacer(match):
+        tag = uuid.uuid4().hex[:12]
+        idx = len(variables)
+        variables.append(match.group())
+        tag_to_index[tag] = idx
+        return f'⟨{tag}⟩'
 
-        result_parts.append(NUMBER_PATTERN.sub(replacer, part))
-    return ''.join(result_parts), variables
+    for m in PLACEHOLDER_RE.finditer(text):
+        before = text[last_end:m.start()]
+        result += NUMBER_PATTERN.sub(_replacer, before)
+        result += m.group()
+        last_end = m.end()
+
+    remaining = text[last_end:]
+    result += NUMBER_PATTERN.sub(_replacer, remaining)
+    return result, variables
 
 
 def restore_variables(text, variables, tag_to_index):
@@ -343,6 +346,26 @@ class TranslatorThread(QThread):
             "X-Title": "Minecraft MOD Translator Desktop"
         }
 
+    def _extract_relevant_glossary(self, batch_text):
+        """バッチテキストから関連glossary語を抽出する。"""
+        if not self.glossary:
+            return {}
+        batch_text_clean = batch_text.lower()
+        for pat in COMPILED_PATTERNS:
+            batch_text_clean = pat.sub(' ', batch_text_clean)
+        lower_to_original = {}
+        for k, v in self.glossary.items():
+            lower_to_original.setdefault(k.lower(), (k, v))
+        scored = []
+        for kl, (k, v) in lower_to_original.items():
+            escaped = re.escape(kl)
+            pattern = r'(?<!\w)' + escaped + r'(?!\w)'
+            matches = re.findall(pattern, batch_text_clean)
+            if matches:
+                scored.append((len(matches), k, v))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return {k: v for _, k, v in scored[:MAX_GLOSSARY_TERMS]}
+
     def _build_system_prompt(self, lang_english):
         base = (
             f"You are a professional translator for Minecraft mods and RPG games.\n"
@@ -374,6 +397,8 @@ class TranslatorThread(QThread):
             f"'area of effect' → '範囲効果' (NOT エリアオブエフェクト)\n"
             f"10. ONLY proper nouns (entity/boss/biome names) use katakana: "
             f"Invoker → インヴォーカー, Warden → ウォーデン\n"
+            f"11. Keep ALL numeric values EXACTLY as-is (percentages, distances, durations, etc.).\n"
+            f"    '150%' → '150%', '3-block radius' → '半径3ブロック' (数値はそのまま)\n"
         )
 
         if self.source_type == "ftbquest":
@@ -639,6 +664,7 @@ class TranslatorThread(QThread):
         for key, text in unique_items.items():
             if text and isinstance(text, str):
                 protected_text, variables, t2i = protect_variables(text)
+                protected_text, variables = _protect_numbers(protected_text, variables, t2i)
                 protected_items[key] = protected_text
                 variable_map[key] = variables
                 tag_map[key] = t2i
@@ -663,21 +689,7 @@ class TranslatorThread(QThread):
 
         if self.glossary:
             batch_text = " ".join([str(v) for v in unique_items.values()])
-            batch_text_clean = batch_text.lower()
-            for pat in COMPILED_PATTERNS:
-                batch_text_clean = pat.sub(' ', batch_text_clean)
-            lower_to_original = {}
-            for k, v in self.glossary.items():
-                lower_to_original.setdefault(k.lower(), (k, v))
-            scored = []
-            for kl, (k, v) in lower_to_original.items():
-                escaped = re.escape(kl)
-                pattern = r'(?<!\w)' + escaped + r'(?!\w)'
-                matches = re.findall(pattern, batch_text_clean)
-                if matches:
-                    scored.append((len(matches), k, v))
-            scored.sort(key=lambda x: x[0], reverse=True)
-            relevant_terms = {k: v for _, k, v in scored[:MAX_GLOSSARY_TERMS]}
+            relevant_terms = self._extract_relevant_glossary(batch_text)
             
             if relevant_terms:
                 glossary_text = "\n".join([f"- {k}: {v}" for k, v in relevant_terms.items()])
@@ -813,7 +825,6 @@ class TranslatorThread(QThread):
     def _retry_corrupted(self, corrupted_keys, url, headers, lang_english, variable_map, tag_map):
         max_retries = 3
         resolved = {}
-
         remaining = dict(corrupted_keys)
 
         for attempt in range(max_retries):
@@ -826,27 +837,32 @@ class TranslatorThread(QThread):
             retry_tag_map = {}
             for key, text in remaining.items():
                 p, v, t = protect_variables(text)
-                retry_protected[key] = p
+                protected_text, v = _protect_numbers(p, v, t)
+                retry_protected[key] = protected_text
                 variable_map[key] = v
                 retry_tag_map[key] = t
                 tag_map[key] = t
 
+            system_content = self._build_system_prompt(lang_english)
+            system_content += "\n=== RETRY CONTEXT ===\n"
+            system_content += "The previous translation corrupted some placeholder tokens.\n"
+            system_content += "Be EXTRA careful to preserve ALL ⟨⟩ tokens exactly.\n"
+
+            if self.glossary:
+                batch_text = " ".join(str(v) for v in remaining.values())
+                relevant = self._extract_relevant_glossary(batch_text)
+                if relevant:
+                    glossary_text = "\n".join(f"- {k}: {v}" for k, v in relevant.items())
+                    system_content += f"\n\nGlossary:\n{glossary_text}"
+
             prompt = json.dumps(retry_protected, ensure_ascii=False)
             data = {
                 "model": self.model,
+                "temperature": 0.1,
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            f"You are a professional translator for Minecraft mods.\n"
-                            f"Translate to {lang_english}. Output ONLY valid JSON.\n"
-                            f"CRITICAL: Keep ALL tokens in ⟨⟩ brackets EXACTLY as-is.\n"
-                        )
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Translate the following values to {lang_english}:\n\n{prompt}"
-                    }
+                    {"role": "system", "content": system_content},
+                    {"role": "user",
+                     "content": f"Translate the following values to {lang_english}:\n\n{prompt}"}
                 ],
             }
 
