@@ -147,7 +147,16 @@ class TranslationMemory:
     def find_similar(self, batch_texts: list, mod_name: str = None,
                      limit: int = 5) -> list:
         return self._v2.find_similar(batch_texts, mod_name=mod_name, limit=limit)
-    
+
+    def find_term_translations(self, batch_texts: list, cross_mod_data: dict = None,
+                                exclude_keys: set = None,
+                                limit: int = 30) -> list:
+        return self._v2.find_term_translations(
+            batch_texts, cross_mod_data=cross_mod_data,
+            exclude_keys=exclude_keys,
+            limit=limit
+        )
+
     def get_stats(self) -> dict:
         """Get statistics about the translation memory."""
         return self._v2.get_stats()

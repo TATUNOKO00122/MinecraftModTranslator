@@ -494,7 +494,30 @@ class TranslatorThread(QThread):
             f"=== CORE PRINCIPLE (MOST IMPORTANT) ===\n"
             f"Translate MEANING naturally — NEVER word-by-word.\n"
             f"English→Japanese requires complete restructuring, not word substitution.\n"
-            f"Process: 1) Read full sentence → 2) Grasp intent → 3) Express in natural Japanese.\n\n"
+            f"Process: 1) Read full sentence → 2) Grasp intent → 3) Express in natural Japanese.\n"
+            f"CRITICAL: NEVER translate sentence-by-sentence in original order.\n"
+            f"Restructure the ENTIRE paragraph into cohesive Japanese flow first, then write.\n\n"
+            f"=== SENTENCE RESTRUCTURING RULES ===\n"
+            f"1. 'Make sure to X' / 'Be sure to X' → NOT 「Xすることを忘れないでください」(stiff literal)\n"
+            f"   → Merge into surrounding context: 「ぜひXしてみてください」「Xしよう」「Xしておこう」\n"
+            f"2. 'as they contain X' / 'because X' → Move REASON before RESULT (Japanese logic order).\n"
+            f"   BAD: 'Xしてください。Yが含まれているためです。' → GOOD: 'Yが含まれているので、ぜひXしてください。'\n"
+            f"3. 'will introduce you to X' → NOT 「Xを紹介します」(subject confusion)\n"
+            f"   → 「Xについて知ることができる」「Xを知るきっかけになる」「Xに出会える」\n"
+            f"4. 'and will introduce you to' → Split or restructure; NOT just 「、そして紹介します」\n"
+            f"   Combine with prior clause into natural Japanese flow.\n"
+            f"5. 'There are various X that you can Y' → NOT 「様々なXがあり、Yできます」\n"
+            f"   → 「Yできる様々なXがある」「さまざまなXをYできるだろう」\n\n"
+            f"=== RESTRUCTURING EXAMPLE ===\n"
+            f"EN: 'Make sure to check out the Side Quests as they contain useful info, and will\n"
+            f"    introduce you to the other mods. There are various integrations between other\n"
+            f"    mods and X that you can discover through these quest lines!'\n"
+            f"BAD (word-by-word): 'サイドクエストをチェックすることを忘れないでください。非常に役立つ\n"
+            f"    情報が多く含まれており、他のモッドを紹介します。これらのクエストラインを通じて、\n"
+            f"    他のモッドとの様々な統合を発見できます！'\n"
+            f"GOOD (restructured): 'サイドクエストには役立つ情報がたくさん含まれているので、ぜひ\n"
+            f"    チェックしてみてください。CTE2で使用されている他のMODについても知ることができます。\n"
+            f"    これらのクエストを通して、他のMODとXの様々な連携機能を発見できるでしょう！'\n\n"
             f"=== FORMATTING TOKENS ===\n"
             f"⟨...⟩ tokens are Minecraft formatting codes (color, bold, reset). NOT text content.\n"
             f"Text split by ⟨...⟩ is still ONE sentence semantically.\n"
@@ -522,6 +545,9 @@ class TranslatorThread(QThread):
             f"6. Prefer natural Japanese compounds over katakana transliteration:\n"
             f"   'melee weapon' → '近接武器' (NOT ミーリー武器), 'ranged attack' → '遠距離攻撃' (NOT レンジド攻撃)\n"
             f"   ONLY proper nouns (entity/boss/biome names) use katakana: Invoker → インヴォーカー, Warden → ウォーデン\n"
+            f"   Minecraft 'mod'/'mods' → ALWAYS 'MOD' (大文字半角), NEVER 'モッド' or 'Mod'\n"
+            f"   'stats' → 'ステータス', 'extra/additional stats' → '追加ステータス' (NOT just omit)\n"
+            f"   'gear' → '装備' or '装備品', 'equipment' → '装備'\n"
             f"7. RPG/game structure terms — translate with standard Japanese equivalents:\n"
             f"   'Act I/II/III/IV' → '第1幕/第2幕/第3幕/第4幕' (NEVER アクトⅠ/Ⅱ — convert Roman numerals to Arabic)\n"
             f"   'Chapter 1/2/3' → '第1章/第2章/第3章'\n"
@@ -537,10 +563,20 @@ class TranslatorThread(QThread):
             f"   'Properties:' / 'Stats:' → '特性:' / 'ステータス:'\n"
             f"   'The X Has:' → 'Xの特性:' or 'Xは以下の特徴を持つ:' (NOT 'Xが持っている:')\n"
             f"   Avoid literal translation of 'has' as '持っている' in headers/labels — use '備える', 'ある', or restructure.\n"
+            f"   'integration(s) between X and Y' → 'XとYの連携(機能)' (NOT '統合' — 統合 implies merging, not interop)\n"
             f"10. Compound entity names: when the base noun has a natural Japanese translation, naturalize the whole compound:\n"
             f"   'Mother Lava Squid' → '溶岩イカの母体' (lava squid = 溶岩イカ is natural Japanese)\n"
             f"   'Mother Leviathan' → 'マザーリヴァイアサン' (Leviathan is a proper noun → katakana)\n"
             f"   Judge by whether the BASE creature name is a common noun (naturalize) or proper noun (katakana).\n"
+            f"11. Game verb translations — use natural Japanese verbs, NEVER katakana verbs:\n"
+            f"   'slot (into)' → '装着する' / 'セットする' / 'はめ込む' (NEVER 'スロットする')\n"
+            f"   'equip' → '装備する', 'craft' → 'クラフトする' / '作成する'\n"
+            f"   'loot' → 'ドロップする' / '入手する', 'spawn' → 'スポーンする'\n"
+            f"   'buff' → '強化効果' / 'バフ', 'debuff' → '弱体効果' / 'デバフ'\n"
+            f"   'upgrade' → 'アップグレードする' / '強化する'\n"
+            f"   'enchant' → 'エンチャントする', 'smelt' → '精錬する'\n"
+            f"12. 'enhance X with Y' → 'YでXを強化する' / 'XにYを付与する' (NOT 'Yを強化する' — subject-object swap)\n"
+            f"13. NEVER transliterate English verbs with する: 'slotする', 'lootする' are FORBIDDEN.\n"
         )
 
         if self.source_type == "ftbquest":
@@ -586,10 +622,20 @@ class TranslatorThread(QThread):
                 "- Advancement descriptions: One sentence hint about the achievement.\n"
             )
 
+        base += (
+            "\n\n=== FINAL CHECK BEFORE OUTPUT ===\n"
+            "Read your Japanese translation again. Does it sound like something a Japanese gamer wrote?\n"
+            "If ANY sentence follows English word order, REWRITE it.\n"
+            "Common red flags: 〜してください（stiff）, 〜を紹介します（subject unclear）, "
+            "Xする（katakana verb）, スロットする, モッド.\n"
+            "Remember: Japanese puts REASON first, then RESULT. 'X because Y' → 'YなのでX'.\n"
+        )
+
         return base
 
     def __init__(self, items, api_key, model, glossary=None, parallel_count=3, 
-                 memory=None, mod_name=None, target_lang="ja_jp", source_type=None):
+                 memory=None, mod_name=None, target_lang="ja_jp", source_type=None,
+                 cross_mod_data=None):
         super().__init__()
         self.items = items
         self._api_key = api_key
@@ -604,6 +650,7 @@ class TranslatorThread(QThread):
         self._rate_limit_hit = False
         self.memory = memory
         self.mod_name = mod_name
+        self.cross_mod_data = cross_mod_data or {}
         self._batches_since_save = 0
         self.save_interval = 5
         self.target_lang = target_lang
@@ -665,6 +712,36 @@ class TranslatorThread(QThread):
         words = re.findall(r'[A-Z][a-zA-Z]{2,}', text)
         counted = collections.Counter(words)
         return [w for w, _ in counted.most_common(20)]
+
+    @staticmethod
+    def _extract_proper_noun_rules(examples):
+        rules = []
+        for source, translation in examples:
+            src_segs = re.findall(r'&[0-9a-fk-or]([^&]+?)(?:&r|$)', source)
+            trans_segs = re.findall(r'&[0-9a-fk-or]([^&]+?)(?:&r|$)', translation)
+            if src_segs and trans_segs:
+                seg_count = min(len(src_segs), len(trans_segs))
+                for i in range(seg_count):
+                    s = src_segs[i].strip()
+                    t = trans_segs[i].strip()
+                    if len(s.split()) >= 2 and re.search(r'[A-Z][a-zA-Z]+', s) and re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', t):
+                        rules.append((s, t))
+                continue
+            en_words = re.findall(r'[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*', source)
+            for phrase in en_words:
+                if len(phrase.split()) >= 2 and phrase in source:
+                    cjk_chunks = re.findall(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u30FC]+', translation)
+                    for k in cjk_chunks:
+                        if len(k) >= 3:
+                            rules.append((phrase, k))
+                            break
+        seen = set()
+        unique = []
+        for en, ja in rules:
+            if en not in seen:
+                seen.add(en)
+                unique.append((en, ja))
+        return unique[:10]
 
     @staticmethod
     def _group_by_context(items):
@@ -940,6 +1017,7 @@ class TranslatorThread(QThread):
         if self.glossary:
             batch_text = " ".join([str(v) for v in unique_items.values()])
             relevant_terms = self._extract_relevant_glossary(batch_text)
+            print(f"[GLOSSARY] {len(relevant_terms)} relevant terms from {len(self.glossary)} total")
             
             if relevant_terms:
                 glossary_text = "\n".join([f"- {k}: {v}" for k, v in relevant_terms.items()])
@@ -948,21 +1026,27 @@ class TranslatorThread(QThread):
         if self.memory:
             try:
                 batch_texts = list(unique_items.values())
-                similar = self.memory.find_similar(batch_texts, mod_name=self.mod_name, limit=5)
-                if similar:
-                    filtered = [(s, t) for s, t in similar if len(s) <= 120 and len(t) <= 120]
-                    if filtered:
-                        examples = "\n".join([f'  "{s}" → "{t}"' for s, t in filtered])
-                        system_content += (
-                            f"\n\n=== REFERENCE TRANSLATIONS (already translated in "
-                            f"{'this MOD' if self.mod_name else 'your translation memory'}) ===\n"
-                            f"Use these for consistent terminology:\n{examples}\n"
-                            f"Rules:\n"
-                            f"- If a proper noun appears above, you MUST use the same translation.\n"
-                            f"- If a term has no established translation, keep the original English as-is.\n"
-                        )
+                batch_keys = set(items.keys())
+                term_translations = self.memory.find_term_translations(
+                    batch_texts, cross_mod_data=self.cross_mod_data,
+                    exclude_keys=batch_keys,
+                    limit=30
+                )
+                print(f"[TM-TERM] find_term_translations returned: {len(term_translations)} results")
+                if term_translations:
+                    rules_text = "\n".join([f"  {en} → {ja}" for en, ja in term_translations])
+                    system_content += (
+                        f"\n\n=== MANDATORY TERM TRANSLATIONS ===\n"
+                        f"The following terms have established translations from other MODs/translations.\n"
+                        f"You MUST use these EXACT Japanese terms when they appear:\n"
+                        f"{rules_text}\n"
+                        f"CRITICAL RULES:\n"
+                        f"- These terms are ALREADY TRANSLATED. Use the EXACT Japanese text shown above.\n"
+                        f"- Do NOT re-translate, paraphrase, or invent new translations for these terms.\n"
+                        f"- Singular/plural variants must also use the same translation.\n"
+                    )
             except Exception as e:
-                print(f"TM few-shot lookup skipped: {e}")
+                print(f"TM term lookup skipped: {e}")
 
         if completed_context:
             context_examples = self._select_context_examples(
@@ -972,15 +1056,37 @@ class TranslatorThread(QThread):
                 examples_text = "\n".join(
                     [f'  "{s}" → "{t}"' for s, t in context_examples]
                 )
+                proper_nouns = self._extract_proper_noun_rules(context_examples)
+                noun_rules = ""
+                if proper_nouns:
+                    noun_rules = "\n\nMANDATORY REPLACEMENT RULES (apply BEFORE translating):\n" + "\n".join(
+                        f"  {en} → {ja}" for en, ja in proper_nouns
+                    )
                 system_content += (
                     f"\n\n=== PREVIOUSLY TRANSLATED IN THIS SESSION ===\n"
-                    f"These items were already translated. Use the SAME terminology:\n"
+                    f"These items were already translated. You MUST use the EXACT same terminology:\n"
                     f"{examples_text}\n"
+                    f"CRITICAL: Do NOT re-translate or paraphrase terms that appear above. Use them EXACTLY.\n"
+                    f"{noun_rules}"
                 )
+
+        print(f"\n===== TRANSLATION PROMPT DEBUG =====")
+        print(f"[MODEL] {self.model}")
+        print(f"[MOD] {self.mod_name}")
+        print(f"[BATCH ITEMS] {len(unique_items)} items")
+        print(f"[MEMORY] {'YES' if self.memory else 'NO'}")
+        print(f"[GLOSSARY] {len(self.glossary) if self.glossary else 0} terms")
+        print(f"[COMPLETED_CONTEXT] {len(completed_context) if completed_context else 0} items")
+        print(f"[SYSTEM PROMPT LENGTH] {len(system_content)} chars")
+        print(f"--- SYSTEM PROMPT (last 2000 chars) ---")
+        print(system_content[-2000:])
+        print(f"--- USER PROMPT (first 500 chars) ---")
+        print(prompt_content[:500])
+        print(f"===== END PROMPT DEBUG =====\n")
 
         data = {
             "model": self.model,
-            "temperature": 0.15,
+            "temperature": 0.3,
             "messages": [
                 {
                     "role": "system",
@@ -988,7 +1094,16 @@ class TranslatorThread(QThread):
                 },
                 {
                     "role": "user",
-                    "content": f"Translate to natural {lang_english}. Preserve keys exactly. Produce idiomatic translations, NOT word-by-word:\n\n{prompt_content}"
+                    "content": (
+                        f"Translate to natural {lang_english}.\n"
+                        f"CRITICAL RULES:\n"
+                        f"1. NEVER translate sentence-by-sentence in English order. Restructure into natural Japanese flow.\n"
+                        f"2. Move reasons before results: 'X because Y' → 'YなのでX'\n"
+                        f"3. Use proper Japanese verbs: 装着する NOT スロットする, MOD NOT モッド\n"
+                        f"4. Preserve all JSON keys exactly. No markdown fences.\n"
+                        f"5. Output ONLY the JSON object.\n\n"
+                        f"{prompt_content}"
+                    )
                 }
             ],
         }
@@ -1142,7 +1257,7 @@ class TranslatorThread(QThread):
             prompt = json.dumps(retry_protected, ensure_ascii=False)
             data = {
                 "model": self.model,
-                "temperature": 0.15,
+                "temperature": 0.3,
                 "messages": [
                     {"role": "system", "content": system_content},
                     {"role": "user",

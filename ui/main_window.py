@@ -1694,11 +1694,25 @@ class MainWindow(QMainWindow):
         if self.current_mod_path and self.current_mod_path in self.loaded_mods:
             source_type = self.loaded_mods[self.current_mod_path].get("type")
         
+        cross_mod_data = {}
+        for path, mod_data in self.loaded_mods.items():
+            if path == self.current_mod_path:
+                continue
+            originals = mod_data.get("original", {})
+            translations = mod_data.get("translations", {})
+            for k in set(list(originals.keys()) + list(translations.keys())):
+                if k not in cross_mod_data:
+                    cross_mod_data[k] = {
+                        "original": originals.get(k, ""),
+                        "translation": translations.get(k, ""),
+                    }
+        
         self.translator_thread = TranslatorThread(
             items, api_key, model, glossary_terms, parallel_count,
             memory=self.memory, mod_name=mod_name,
             target_lang=settings.get("target_lang", "ja_jp"),
-            source_type=source_type
+            source_type=source_type,
+            cross_mod_data=cross_mod_data
         )
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self.on_translate_finished)
@@ -2023,11 +2037,25 @@ class MainWindow(QMainWindow):
         
         mod_name = entry['mod_name']
         
+        cross_mod_data = {}
+        for path, mod_data in self.loaded_mods.items():
+            if path == mod_path:
+                continue
+            originals = mod_data.get("original", {})
+            translations = mod_data.get("translations", {})
+            for k in set(list(originals.keys()) + list(translations.keys())):
+                if k not in cross_mod_data:
+                    cross_mod_data[k] = {
+                        "original": originals.get(k, ""),
+                        "translation": translations.get(k, ""),
+                    }
+        
         self.translator_thread = TranslatorThread(
             items, api_key, model, glossary_terms, parallel_count,
             memory=self.memory, mod_name=mod_name,
             target_lang=settings.get("target_lang", "ja_jp"),
             source_type=entry['source_type'],
+            cross_mod_data=cross_mod_data
         )
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self._on_batch_mod_finished)
