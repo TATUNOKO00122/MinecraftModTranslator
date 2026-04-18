@@ -1019,11 +1019,15 @@ class MainWindow(QMainWindow):
         
         if confirm == QMessageBox.Yes:
             self.editor._programmatic_update = True
+            self.editor.table.setUpdatesEnabled(False)
+            mod_data = self.loaded_mods.get(self.current_mod_path)
             for row in selected_rows:
+                key_item = self.editor.table.item(row, 0)
+                if key_item and mod_data:
+                    mod_data["translations"].pop(key_item.text(), None)
                 self.editor.table.item(row, 2).setText("")
                 self.editor._previous_cell_texts[(row, 2)] = ""
-                original = self.editor.table.item(row, 1).text()
-                self.editor._update_row_color(row, "", original)
+            self.editor.table.setUpdatesEnabled(True)
             self.editor._programmatic_update = False
             self.editor.undo_stack.clear()
             self.editor._emit_stats()
@@ -1043,16 +1047,9 @@ class MainWindow(QMainWindow):
         )
         
         if confirm == QMessageBox.Yes:
-            self.editor._programmatic_update = True
-            for row in range(self.editor.table.rowCount()):
-                self.editor.table.item(row, 2).setText("")
-                self.editor._previous_cell_texts[(row, 2)] = ""
-                original = self.editor.table.item(row, 1).text()
-                self.editor._update_row_color(row, "", original)
-            self.editor._programmatic_update = False
             mod_data["translations"] = {}
             self.editor.undo_stack.clear()
-            self.editor._emit_stats()
+            self.editor.load_data(mod_data["original"], {})
             self.refresh_all_mod_colors()
             self.statusBar().showMessage(f"翻訳をクリアしました", 3000)
 
@@ -1079,15 +1076,8 @@ class MainWindow(QMainWindow):
                 mod_data["translations"] = {}
             
             if self.current_mod_path and self.loaded_mods[self.current_mod_path].get("type") != "ftbquest":
-                self.editor._programmatic_update = True
-                for row in range(self.editor.table.rowCount()):
-                    self.editor.table.item(row, 2).setText("")
-                    self.editor._previous_cell_texts[(row, 2)] = ""
-                    original = self.editor.table.item(row, 1).text()
-                    self.editor._update_row_color(row, "", original)
-                self.editor._programmatic_update = False
                 self.editor.undo_stack.clear()
-                self.editor._emit_stats()
+                self.editor.load_data(self.loaded_mods[self.current_mod_path]["original"], {})
             
             self.refresh_all_mod_colors()
             self.statusBar().showMessage(f"{len(mods_to_clear)} MODの翻訳をクリアしました", 3000)
