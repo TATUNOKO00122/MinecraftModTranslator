@@ -1242,7 +1242,7 @@ class MainWindow(QMainWindow):
                 "type": "ftbquest"
             }
             
-            memory_translations = self.memory.apply_to(lang_dict, mod_name=modpack_name)
+            memory_translations = self.memory.apply_to(lang_dict, mod_name=f"[FTBクエスト] {modpack_name}")
             if memory_translations:
                 self.loaded_mods[quests_folder]["translations"].update(memory_translations)
             
@@ -1303,7 +1303,7 @@ class MainWindow(QMainWindow):
                 "_item_sources": item_sources,
             }
 
-            memory_translations = self.memory.apply_to(lang_dict, mod_name=pack_name)
+            memory_translations = self.memory.apply_to(lang_dict, mod_name=f"[データパック] {pack_name}")
             if memory_translations:
                 self.loaded_mods[datapack_path]["translations"].update(memory_translations)
 

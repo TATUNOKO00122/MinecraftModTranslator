@@ -69,6 +69,7 @@ class TranslationMemoryV2:
 
         conn.commit()
         self._migrate_add_origin()
+        self._migrate_null_mod_name()
 
     def _migrate_to_composite_key(self, conn):
         """旧スキーマ(key単独UNIQUE)から(key, mod_name)複合UNIQUEへ移行。"""
@@ -124,6 +125,34 @@ class TranslationMemoryV2:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_origin ON translations(origin)')
             conn.commit()
             print("TM schema migrated: added 'origin' column")
+
+    def _migrate_null_mod_name(self):
+        """Convert NULL mod_name to empty string and remove duplicates caused by NULL UNIQUE issue."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT COUNT(*) FROM translations WHERE mod_name IS NULL")
+            null_count = cursor.fetchone()[0]
+            if null_count == 0:
+                return
+
+            print(f"TM: Migration - NULL mod_name -> empty string ({null_count} rows), removing duplicates...")
+
+            # Keep only the latest row per (key, '') by deleting older duplicates
+            cursor.execute('''
+                DELETE FROM translations WHERE mod_name IS NULL AND id NOT IN (
+                    SELECT MAX(id) FROM translations WHERE mod_name IS NULL GROUP BY key
+                )
+            ''')
+
+            cursor.execute('''
+                UPDATE translations SET mod_name = '' WHERE mod_name IS NULL
+            ''')
+            conn.commit()
+            print(f"TM: Migration complete (NULL mod_name converted to empty string)")
+        except Exception as e:
+            print(f"TM: NULL mod_name migration failed: {e}")
+            conn.rollback()
     
     def _migrate_from_json_if_needed(self):
         """Migrate from legacy JSON format if exists and DB is empty."""
@@ -222,7 +251,8 @@ class TranslationMemoryV2:
                 source = sources.get(key, '') if sources else ''
                 category = self._detect_category(key)
                 source_hash = self._hash_text(source)
-                batch_rows.append((key, source, translation, mod_name, category, model, now, source_hash, origin))
+                effective_mod = mod_name if mod_name else ''
+                batch_rows.append((key, source, translation, effective_mod, category, model, now, source_hash, origin))
             
             if batch_rows:
                 cursor.executemany('''
@@ -327,8 +357,8 @@ class TranslationMemoryV2:
                     placeholders = self._build_in_clause(len(batch_keys))
                     cursor.execute(
                         f'SELECT key, translation FROM translations '
-                        f'WHERE key IN ({placeholders}) AND mod_name IS NULL',
-                        batch_keys
+                        f'WHERE key IN ({placeholders}) AND mod_name = ? ',
+                        batch_keys + ['']
                     )
                     for row in cursor.fetchall():
                         if row['key'] not in results:
@@ -341,10 +371,10 @@ class TranslationMemoryV2:
                         placeholders = self._build_in_clause(len(batch_keys))
                         cursor.execute(
                             f'SELECT key, translation, mod_name FROM translations '
-                            f'WHERE key IN ({placeholders}) AND mod_name IS NOT NULL AND mod_name != ? '
+                            f'WHERE key IN ({placeholders}) AND mod_name IS NOT NULL AND mod_name != ? AND mod_name != ? '
                             f'ORDER BY CASE origin WHEN \'user\' THEN 0 WHEN \'ai_corrected\' THEN 1 ELSE 2 END, '
                             f'reviewed DESC, translated_at DESC',
-                            batch_keys + [mod_name]
+                            batch_keys + [mod_name, '']
                         )
                         for row in cursor.fetchall():
                             if row['key'] not in results:
@@ -397,8 +427,8 @@ class TranslationMemoryV2:
                     placeholders = self._build_in_clause(len(batch))
                     cursor.execute(
                         f'SELECT key, reviewed, origin FROM translations '
-                        f'WHERE key IN ({placeholders}) AND mod_name IS NULL',
-                        batch
+                        f'WHERE key IN ({placeholders}) AND mod_name = ?',
+                        batch + ['']
                     )
                     for row in cursor.fetchall():
                         if row['key'] not in results:
@@ -414,10 +444,10 @@ class TranslationMemoryV2:
                     placeholders = self._build_in_clause(len(batch))
                     cursor.execute(
                         f'SELECT key, reviewed, origin FROM translations '
-                        f'WHERE key IN ({placeholders}) AND mod_name IS NOT NULL AND mod_name != ? '
+                        f'WHERE key IN ({placeholders}) AND mod_name IS NOT NULL AND mod_name != ? AND mod_name != ? '
                         f'ORDER BY CASE origin WHEN \'user\' THEN 0 WHEN \'ai_corrected\' THEN 1 ELSE 2 END, '
                         f'reviewed DESC, translated_at DESC',
-                        batch + [mod_name]
+                        batch + [mod_name, '']
                     )
                     for row in cursor.fetchall():
                         if row['key'] not in results:
