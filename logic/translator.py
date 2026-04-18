@@ -1003,7 +1003,8 @@ class TranslatorThread(QThread):
                     )
                     system_content += (
                         f"\n\n=== SIMILAR TRANSLATIONS FROM MEMORY ===\n"
-                        f"These are similar texts that were previously translated. Use as style/terminology reference:\n"
+                        f"The following are previously translated similar texts. Prefer consistent terminology "
+                        f"when the source closely matches, but prioritize accuracy over consistency when they diverge.\n\n"
                         f"{examples_text}\n"
                     )
                     print(f"[TM-SIMILAR] Added {len(similar_examples)} similar examples to prompt")
