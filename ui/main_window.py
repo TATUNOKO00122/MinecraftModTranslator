@@ -390,7 +390,7 @@ class MainWindow(QMainWindow):
                 review_status = recovery.get("review_status", {})
                 if translations:
                     self.loaded_mods[path]["translations"].update(translations)
-                    self.loaded_mods[path]["review_status"].update(review_status)
+                    self.loaded_mods[path].setdefault("review_status", {}).update(review_status)
                     applied_count += len(translations)
         
         if applied_count > 0:
@@ -1452,6 +1452,34 @@ class MainWindow(QMainWindow):
         finally:
             self.rp_thread = None
 
+    def _load_bundled_translations(self, source_path, en_target, found_files, target_lang, original_data):
+        """MOD内に同梱されているターゲット言語ファイル(ja_jp.json等)から既存翻訳を読み込む"""
+        en_dir = os.path.dirname(en_target)
+        en_basename = os.path.basename(en_target)
+        target_basename = en_basename.replace('en_us', target_lang)
+        if target_basename == en_basename:
+            return {}
+        target_path = en_dir + '/' + target_basename if en_dir else target_basename
+
+        matched = None
+        for f in found_files:
+            if f == target_path or f.endswith('/' + target_basename) or f == target_basename:
+                matched = f
+                break
+        if not matched:
+            return {}
+
+        try:
+            bundled = self.file_handler.read_translation_file(source_path, matched)
+        except Exception:
+            return {}
+
+        result = {}
+        for k, v in bundled.items():
+            if k in original_data and v and str(v).strip():
+                result[k] = v
+        return result
+
     def load_source(self, path):
         if path in self.loaded_mods:
             return
@@ -1483,10 +1511,28 @@ class MainWindow(QMainWindow):
                 "name": mod_name,
                 "original": data,
                 "translations": {},
+                "review_status": {},
                 "files": found_files,
                 "target_file": target,
                 "_char_count": char_count
             }
+
+            # Auto-apply existing translations from bundled target lang file
+            settings = self.settings_dialog.get_settings()
+            target_lang = settings.get("target_lang", "ja_jp")
+            bundled_translations = self._load_bundled_translations(
+                path, target, found_files, target_lang, data
+            )
+            if bundled_translations:
+                self.loaded_mods[path]["translations"].update(bundled_translations)
+                bundled_review = {
+                    k: {"issues": [], "reviewed": True}
+                    for k in bundled_translations
+                }
+                if "review_status" not in self.loaded_mods[path]:
+                    self.loaded_mods[path]["review_status"] = {}
+                self.loaded_mods[path]["review_status"].update(bundled_review)
+                print(f"Applied {len(bundled_translations)} bundled translations from {target_lang} to {mod_name}")
 
             # Auto-apply memory
             memory_translations = self.memory.apply_to(data, mod_name=mod_name)
@@ -1501,19 +1547,30 @@ class MainWindow(QMainWindow):
                     print(f"TM: {len(changed)} 件の原文変更を検出、除外しました")
                 
                 if memory_translations:
-                    reviewed_keys = self.memory.batch_get_review_status(memory_translations.keys(), mod_name=mod_name)
-                    tm_review_status = {}
-                    for key in memory_translations:
-                        is_reviewed = reviewed_keys.get(key, {}).get("reviewed", False)
-                        is_user = reviewed_keys.get(key, {}).get("origin") == "user"
-                        tm_review_status[key] = {
-                            "issues": [] if (is_reviewed or is_user) else ["TM未検証"],
-                            "reviewed": is_reviewed or is_user
-                        }
-                    
-                    self.loaded_mods[path]["translations"].update(memory_translations)
-                    if tm_review_status:
-                        self.loaded_mods[path]["review_status"] = tm_review_status
+                    existing_translations = self.loaded_mods[path]["translations"]
+                    existing_reviewed = {
+                        k for k, v in self.loaded_mods[path].get("review_status", {}).items()
+                        if v.get("reviewed", False)
+                    }
+                    memory_translations = {
+                        k: v for k, v in memory_translations.items()
+                        if k not in existing_translations or k not in existing_reviewed
+                    }
+
+                    if memory_translations:
+                        reviewed_keys = self.memory.batch_get_review_status(memory_translations.keys(), mod_name=mod_name)
+                        tm_review_status = {}
+                        for key in memory_translations:
+                            is_reviewed = reviewed_keys.get(key, {}).get("reviewed", False)
+                            is_user = reviewed_keys.get(key, {}).get("origin") == "user"
+                            tm_review_status[key] = {
+                                "issues": [] if (is_reviewed or is_user) else ["TM未検証"],
+                                "reviewed": is_reviewed or is_user
+                            }
+                        
+                        self.loaded_mods[path]["translations"].update(memory_translations)
+                        if tm_review_status:
+                            self.loaded_mods[path]["review_status"].update(tm_review_status)
                     print(f"Applied {len(memory_translations)} translations from memory to {mod_name}")
 
             total = len(data)

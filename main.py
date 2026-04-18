@@ -2,7 +2,6 @@ import sys
 import os
 import traceback
 import faulthandler
-faulthandler.enable()
 
 # Handle frozen environment (PyInstaller with --noconsole)
 # Redirect stdout/stderr to log file to capture crashes
@@ -16,6 +15,8 @@ if getattr(sys, 'frozen', False):
             sys.stdout = _log_file
         if sys.stderr is None:
             sys.stderr = _log_file
+
+faulthandler.enable()
 
 from PySide6.QtWidgets import QApplication, QMessageBox
 from ui.main_window import MainWindow

@@ -488,9 +488,27 @@ class TranslatorThread(QThread):
 
     def _build_system_prompt(self, lang_english):
         base = (
-            f"Professional translator for Minecraft mods/RPG games. EN→{lang_english}.\n"
-            f"Input: JSON object. Keys are identifiers (NEVER change keys). Values are English text.\n"
-            f"Output: JSON object with the same keys and translated values. No markdown fences.\n\n"
+            f"Expert EN→{lang_english} translator for Minecraft mods/RPG games.\n"
+            f"Input: JSON object (keys = identifiers, NEVER change). Values = English text.\n"
+            f"Output: JSON with same keys, naturally translated values. No markdown fences.\n\n"
+            f"=== CORE PRINCIPLE (MOST IMPORTANT) ===\n"
+            f"Translate MEANING naturally — NEVER word-by-word.\n"
+            f"English→Japanese requires complete restructuring, not word substitution.\n"
+            f"Process: 1) Read full sentence → 2) Grasp intent → 3) Express in natural Japanese.\n\n"
+            f"=== FORMATTING TOKENS ===\n"
+            f"⟨...⟩ tokens are Minecraft formatting codes (color, bold, reset). NOT text content.\n"
+            f"Text split by ⟨...⟩ is still ONE sentence semantically.\n"
+            f"'that ⟨...⟩thing⟨...⟩' means 'that thing' with styling on 'thing'.\n"
+            f"Translate naturally first, then position ⟨...⟩ tokens where they belong.\n\n"
+            f"=== QUALITY EXAMPLES (DO / DON'T) ===\n"
+            f"DON'T (word-by-word → unnatural):\n"
+            f"  'This is that thing' → 'これはそのものだ' ('thing' here = 何か/あれ, not もの)\n"
+            f"  'It has been a long time' → 'それは長い時間だった' (literal calque)\n"
+            f"  'You might want to try...' → 'あなたは試してみたいかもしれない...' (word salad)\n"
+            f"DO (meaning-based → natural):\n"
+            f"  'This is that thing' → 'それがその何かだ' or 'それがあれだ'\n"
+            f"  'It has been a long time' → '久しぶりだな'\n"
+            f"  'You might want to try...' → '…してみるといいだろう'\n\n"
             f"=== RULES (priority order) ===\n"
             f"1. Keep ALL ⟨⟩ tokens EXACTLY as-is. Never modify, translate, remove, or reorder them.\n"
             f"   Multiple ⟨...⟩ tokens must stay in original left-to-right order.\n"
@@ -504,6 +522,25 @@ class TranslatorThread(QThread):
             f"6. Prefer natural Japanese compounds over katakana transliteration:\n"
             f"   'melee weapon' → '近接武器' (NOT ミーリー武器), 'ranged attack' → '遠距離攻撃' (NOT レンジド攻撃)\n"
             f"   ONLY proper nouns (entity/boss/biome names) use katakana: Invoker → インヴォーカー, Warden → ウォーデン\n"
+            f"7. RPG/game structure terms — translate with standard Japanese equivalents:\n"
+            f"   'Act I/II/III/IV' → '第1幕/第2幕/第3幕/第4幕' (NEVER アクトⅠ/Ⅱ — convert Roman numerals to Arabic)\n"
+            f"   'Chapter 1/2/3' → '第1章/第2章/第3章'\n"
+            f"   'Stage 1/2/3' → '第1ステージ/第2ステージ/第3ステージ'\n"
+            f"   'Wave 1/2/3' → '第1波/第2波/第3波'\n"
+            f"8. NEVER drop parts of compound nouns:\n"
+            f"   'Mini-Boss' → 'ミニボス' (NOT ボス — keep the 'Mini' modifier)\n"
+            f"   'Sub-Boss' → 'サブボス' (NOT ボス)\n"
+            f"   'Elite Mob' → 'エリートモブ' (NOT モブ)\n"
+            f"   'Defeat All Act II Mini-Bosses!' → '第2幕のミニボスをすべて倒せ！' (NOT 全てのアクトⅡのBOSSを倒せ！)\n"
+            f"9. Translate English structure NATURALLY into Japanese, NOT word-by-word:\n"
+            f"   'Has:' / 'Has the following:' → '以下の特徴がある:' or '以下を備える:' (NOT '持っている:')\n"
+            f"   'Properties:' / 'Stats:' → '特性:' / 'ステータス:'\n"
+            f"   'The X Has:' → 'Xの特性:' or 'Xは以下の特徴を持つ:' (NOT 'Xが持っている:')\n"
+            f"   Avoid literal translation of 'has' as '持っている' in headers/labels — use '備える', 'ある', or restructure.\n"
+            f"10. Compound entity names: when the base noun has a natural Japanese translation, naturalize the whole compound:\n"
+            f"   'Mother Lava Squid' → '溶岩イカの母体' (lava squid = 溶岩イカ is natural Japanese)\n"
+            f"   'Mother Leviathan' → 'マザーリヴァイアサン' (Leviathan is a proper noun → katakana)\n"
+            f"   Judge by whether the BASE creature name is a common noun (naturalize) or proper noun (katakana).\n"
         )
 
         if self.source_type == "ftbquest":
@@ -943,7 +980,7 @@ class TranslatorThread(QThread):
 
         data = {
             "model": self.model,
-            "temperature": 0.0,
+            "temperature": 0.15,
             "messages": [
                 {
                     "role": "system",
@@ -951,7 +988,7 @@ class TranslatorThread(QThread):
                 },
                 {
                     "role": "user",
-                    "content": f"Translate the following values to {lang_english}:\n\n{prompt_content}"
+                    "content": f"Translate to natural {lang_english}. Preserve keys exactly. Produce idiomatic translations, NOT word-by-word:\n\n{prompt_content}"
                 }
             ],
         }
@@ -1105,11 +1142,11 @@ class TranslatorThread(QThread):
             prompt = json.dumps(retry_protected, ensure_ascii=False)
             data = {
                 "model": self.model,
-                "temperature": 0.0,
+                "temperature": 0.15,
                 "messages": [
                     {"role": "system", "content": system_content},
                     {"role": "user",
-                     "content": f"Translate the following values to {lang_english}:\n\n{prompt}"}
+                     "content": f"Translate to natural {lang_english}. Preserve keys and ⟨⟩ tokens exactly:\n\n{prompt}"}
                 ],
             }
 
@@ -1195,13 +1232,35 @@ class TranslatorThread(QThread):
 
             en_pattern = re.compile(re.escape(en_norm), re.IGNORECASE)
 
+            en_words = re.findall(r'[A-Za-z]+', en_norm)
+            ja_compound_re = None
+            if len(en_words) >= 2:
+                katakana_parts = []
+                for w in en_words:
+                    w_lower = w.lower()
+                    if w_lower in ('the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'and', 'or'):
+                        continue
+                    katakana_parts.append(re.escape(w))
+                if katakana_parts:
+                    ja_compound_re = re.compile(r'[\u30A0-\u30FF\u3040-\u309F\u4E00-\u9FFF]*'
+                                                + r'[\s\u30FB\u30F7\u30FC]?'.join(katakana_parts)
+                                                + r'[\u30A0-\u30FF\u3040-\u309F\u4E00-\u9FFF]*',
+                                                re.IGNORECASE)
+
             for key, translated in final_results.items():
                 source = unique_items.get(key, self.items.get(key, ''))
                 if not en_pattern.search(source):
                     continue
 
+                if ja_term in translated:
+                    continue
+
                 if en_pattern.search(translated):
                     final_results[key] = en_pattern.sub(ja_term, translated)
+                    continue
+
+                if ja_compound_re and ja_compound_re.search(translated):
+                    final_results[key] = ja_compound_re.sub(ja_term, translated)
 
     def _check_batch_consistency(self, all_translated: dict):
         issues = []
