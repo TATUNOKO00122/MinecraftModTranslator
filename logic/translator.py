@@ -68,7 +68,7 @@ VARIABLE_PATTERNS = [
 
 COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in VARIABLE_PATTERNS]
 
-MAX_GLOSSARY_TERMS = 40
+MAX_GLOSSARY_TERMS = 60
 
 NUMBER_PATTERN = re.compile(r'\b\d+(?:[.,]\d+)*\b')
 
@@ -440,6 +440,8 @@ class TranslatorThread(QThread):
         
         batch_words = set(re.findall(r'[a-z]{3,}', batch_text_clean))
         batch_stems = {self._stem_word(w): w for w in batch_words}
+        
+        print(f"[GLOSSARY-DBG] batch_words({len(batch_words)}): {sorted(batch_words)[:20]}")
         
         scored = []
         for en_term, ja_term in self.glossary.items():
@@ -958,7 +960,12 @@ class TranslatorThread(QThread):
             
             if relevant_terms:
                 glossary_text = "\n".join([f"- {k}: {v}" for k, v in relevant_terms.items()])
-                system_content += f"\n\nUse the following glossary for consistency:\n{glossary_text}"
+                system_content += (
+                    f"\n\n=== GLOSSARY (MANDATORY) ===\n"
+                    f"Use these EXACT translations for the following terms.\n"
+                    f"A post-translation validator will force-replace any non-matching terms.\n"
+                    f"{glossary_text}"
+                )
 
         if self.memory:
             try:
@@ -984,6 +991,24 @@ class TranslatorThread(QThread):
                     )
             except Exception as e:
                 print(f"TM term lookup skipped: {e}")
+
+        if self.memory:
+            try:
+                similar_examples = self.memory.find_similar(
+                    batch_texts, mod_name=self.mod_name, limit=5
+                )
+                if similar_examples:
+                    examples_text = "\n".join(
+                        [f'  "{s}" → "{t}"' for s, t in similar_examples]
+                    )
+                    system_content += (
+                        f"\n\n=== SIMILAR TRANSLATIONS FROM MEMORY ===\n"
+                        f"These are similar texts that were previously translated. Use as style/terminology reference:\n"
+                        f"{examples_text}\n"
+                    )
+                    print(f"[TM-SIMILAR] Added {len(similar_examples)} similar examples to prompt")
+            except Exception as e:
+                print(f"TM similar lookup skipped: {e}")
 
         if completed_context:
             context_examples = self._select_context_examples(

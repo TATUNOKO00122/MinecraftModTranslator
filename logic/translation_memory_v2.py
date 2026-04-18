@@ -63,7 +63,6 @@ class TranslationMemoryV2:
 
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_key ON translations(key)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_source ON translations(source)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_source_hash ON translations(source_hash)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_reviewed ON translations(reviewed)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_mod_name ON translations(mod_name)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_origin ON translations(origin)')
@@ -109,7 +108,6 @@ class TranslationMemoryV2:
             cursor.execute('DROP TABLE translations_old')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_key ON translations(key)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_source ON translations(source)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_source_hash ON translations(source_hash)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_reviewed ON translations(reviewed)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_mod_name ON translations(mod_name)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_origin ON translations(origin)')
@@ -170,12 +168,7 @@ class TranslationMemoryV2:
             print(f"Migration failed: {e}")
     
     def _hash_text(self, text: str) -> str:
-        """Create a simple hash for similarity matching."""
-        if not text:
-            return ""
-        # Normalize and create a simple hash for grouping similar texts
-        normalized = text.lower().strip()
-        return str(hash(normalized) % (10 ** 10))
+        return ""
     
     def _detect_category(self, key: str) -> str:
         """Detect category from translation key."""
@@ -579,12 +572,6 @@ class TranslationMemoryV2:
 
         batch_stems = {self._stem(w) for w in batch_words}
 
-        print(f"[TM-INT] batch_words: {batch_words}")
-        print(f"[TM-INT] batch_stems: {batch_stems}")
-
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
         if len(batch_stems) <= 3:
             min_stem_count = 1
         elif len(batch_stems) <= 8:
@@ -592,49 +579,11 @@ class TranslationMemoryV2:
         else:
             min_stem_count = max(2, len(batch_stems) // 4)
 
-        print(f"[TM-INT] min_stem_count: {min_stem_count}")
-
         search_words = list(batch_words | batch_stems)
         top_words = sorted(search_words, key=len, reverse=True)[:20]
-        print(f"[TM-INT] top_words (LIKE targets): {top_words[:10]}")
 
-        # First: try without origin filter to see if entries exist at all
-        if mod_name:
-            cursor.execute(
-                'SELECT COUNT(*) FROM translations WHERE mod_name = ? AND source != ""',
-                (mod_name,)
-            )
-            mod_total = cursor.fetchone()[0]
-            print(f"[TM-INT] TM entries for mod '{mod_name}': {mod_total}")
-
-        cursor.execute('SELECT COUNT(*) FROM translations WHERE source != ""')
-        total = cursor.fetchone()[0]
-        print(f"[TM-INT] Total TM entries: {total}")
-
-        # Check if 'gem' or 'extract' words exist in TM at all
-        cursor.execute(
-            "SELECT source, translation, origin, reviewed FROM translations WHERE source LIKE '%gem%' AND source LIKE '%extract%' LIMIT 5"
-        )
-        gem_rows = cursor.fetchall()
-        print(f"[TM-INT] TM entries matching 'gem'+'extract': {len(gem_rows)}")
-        for r in gem_rows:
-            print(f"[TM-INT]   -> src='{r['source']}', trans='{r['translation']}', origin='{r['origin']}', reviewed={r['reviewed']}")
-
-        cursor.execute(
-            "SELECT source, translation, origin FROM translations WHERE translation LIKE '%ジェムエクストラクター%' LIMIT 5"
-        )
-        trans_rows = cursor.fetchall()
-        print(f"[TM-INT] TM entries with 'ジェムエクストラクター' in translation: {len(trans_rows)}")
-        for r in trans_rows:
-            print(f"[TM-INT]   -> src='{r['source'][:80]}', trans='{r['translation'][:80]}', origin='{r['origin']}'")
-
-        cursor.execute(
-            "SELECT source, translation, origin FROM translations WHERE source LIKE '%Gem Extractor%' LIMIT 5"
-        )
-        ge_rows = cursor.fetchall()
-        print(f"[TM-INT] TM entries with 'Gem Extractor' in source: {len(ge_rows)}")
-        for r in ge_rows:
-            print(f"[TM-INT]   -> src='{r['source'][:80]}', trans='{r['translation'][:80]}', origin='{r['origin']}'")
+        conn = self._get_connection()
+        cursor = conn.cursor()
 
         like_clauses = ' OR '.join(['source LIKE ?' for _ in top_words])
         like_params = [f'%{w}%' for w in top_words]
@@ -659,8 +608,7 @@ class TranslationMemoryV2:
         cursor.execute(query, params)
         candidates = cursor.fetchall()
 
-        print(f"[TM-INT] SQL candidates: {len(candidates)}")
-        print(f"[TM-INT] min_stem_count: {min_stem_count}")
+        print(f"[TM-SIMILAR] stems={len(batch_stems)}, min_stem={min_stem_count}, candidates={len(candidates)}")
 
         if not candidates:
             return []
@@ -684,13 +632,6 @@ class TranslationMemoryV2:
             source_words = set(re.findall(r'[a-zA-Z]{3,}', source_clean.lower())) - self._STOP_WORDS
             source_stems = {self._stem(w) for w in source_words}
             origin_w = self._ORIGIN_WEIGHT.get(origin, 1.0)
-
-            if 'extract' in source.lower() and 'gem' in source.lower():
-                common = batch_stems & source_stems
-                jaccard_debug = self._compute_jaccard(batch_stems, source_stems)
-                print(f"[TM-INT] gem+extract candidate: common={len(common)}/{min_stem_count}, jaccard={jaccard_debug:.3f}, src_len={len(source)}")
-                print(f"[TM-INT]   source_words: {source_words}")
-                print(f"[TM-INT]   common_stems: {common}")
 
             if len(source_words) <= 5 and source_stems and source_stems.issubset(batch_stems):
                 if len(source) <= self._MAX_EXAMPLE_LENGTH and len(translation) <= self._MAX_EXAMPLE_LENGTH:
@@ -725,13 +666,10 @@ class TranslationMemoryV2:
         empty_source_results = self._search_empty_source_pairs(cursor, batch_texts)
         scored.extend(empty_source_results)
 
-        print(f"[TM-INT] scored: {len(scored)}, long_matched: {len(long_matched)}, empty_source: {len(empty_source_results)}")
+        print(f"[TM-SIMILAR] scored={len(scored)}, long_matched={len(long_matched)}, empty_source={len(empty_source_results)}")
 
         if not scored:
             return []
-
-        for s in scored[:5]:
-            print(f"[TM-INT]   scored: {s[2][:60]} → {s[3][:60]}")
 
         scored.sort(key=lambda x: -x[0])
 
@@ -743,7 +681,8 @@ class TranslationMemoryV2:
                 results.append((source, translation))
                 if len(results) >= limit:
                     break
-        
+
+        print(f"[TM-SIMILAR] returning {len(results)} examples")
         return results
 
     def _search_empty_source_pairs(self, cursor, batch_texts: List[str]) -> List[Tuple[float, float, str, str]]:
@@ -830,45 +769,25 @@ class TranslationMemoryV2:
                                       term: str, stems: set) -> Optional[str]:
         """
         色コードがない長文から、termに対応する訳語を推定して抽出する。
-        英語原文でtermが出現する位置と、日本語訳の対応するCJKチャンクから推定。
+        _extract_proper_noun_pairsで構造的にマッチする対のみ返す。
+        CJKチャンクの位置推定は精度が低すぎるため使用しない。
         """
         pairs = self._extract_proper_noun_pairs(source, translation)
+        best = None
+        best_score = 0.0
         for en_phrase, ja_phrase in pairs:
             en_words = set(re.findall(r'[a-zA-Z]{2,}', en_phrase.lower()))
             en_stems = {self._stem(w) for w in en_words}
             overlap = len(stems & en_stems)
             ratio = overlap / len(stems) if stems else 0
             if ratio >= 0.6 and len(ja_phrase) <= 40:
-                return ja_phrase
-
-        src_clean = re.sub(r'&[0-9a-fk-or]', '', source)
-        term_lower = term.lower()
-
-        term_words = term_lower.split()
-        src_lower = src_clean.lower()
-
-        all_positions = []
-        for tw in term_words:
-            idx = src_lower.find(tw)
-            if idx >= 0:
-                all_positions.append(idx)
-
-        if not all_positions:
-            return None
-
-        trans_clean = re.sub(r'&[0-9a-fk-or]', '', translation)
-
-        cjk_chunks = re.findall(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u30FC\uFF70]+', trans_clean)
-        if not cjk_chunks:
-            return None
-
-        term_char_count = len(term.replace(' ', ''))
-        for chunk in cjk_chunks:
-            ratio = len(chunk) / term_char_count if term_char_count > 0 else 0
-            if 0.3 <= ratio <= 3.0 and len(chunk) <= 30:
-                return chunk
-
-        return None
+                score = ratio
+                if len(en_phrase.split()) <= 6:
+                    score += 0.3
+                if score > best_score:
+                    best_score = score
+                    best = ja_phrase
+        return best
 
     def find_term_translations(self, batch_texts: List[str],
                                cross_mod_data: dict = None,
@@ -993,7 +912,7 @@ class TranslationMemoryV2:
                            exclude_keys: set = None) -> Optional[str]:
         """
         TM内から固有名詞の訳語を検索する。単複変形・活用形も考慮。
-        全単語の語幹がANDで含まれるsourceのみ候補とし、長文descriptionは除外する。
+        source検索・key検索・長文source検索を1クエリに統合し、Python側でスコアリング。
         exclude_keys に一致するキーのエントリはスキップする。
         """
         conn = self._get_connection()
@@ -1021,30 +940,49 @@ class TranslationMemoryV2:
         exclude_keys = exclude_keys or set()
 
         and_conditions = []
-        params = []
+        source_like_params = []
         for group in word_stem_groups:
             or_parts = [f"(source LIKE ?)" for _ in group]
             and_conditions.append(f"({' OR '.join(or_parts)})")
-            params.extend([f'%{v}%' for v in group])
+            source_like_params.extend([f'%{v}%' for v in group])
 
-        where_clause = ' AND '.join(and_conditions)
+        source_where = ' AND '.join(and_conditions)
 
-        max_src = self._MAX_TERM_SOURCE_LEN
+        all_variants = set()
+        for group in word_stem_groups:
+            all_variants.update(group)
+        key_variants = [v for v in all_variants if len(v) >= 3]
+
+        key_and_conditions = []
+        key_like_params = []
+        if key_variants:
+            for group in word_stem_groups:
+                or_parts = [f"(key LIKE ?)" for _ in group]
+                key_and_conditions.append(f"({' OR '.join(or_parts)})")
+                key_like_params.extend([f'%{v}%' for v in group])
+        key_where = ' AND '.join(key_and_conditions) if key_and_conditions else "1=0"
+
+        exclude_clause = ""
+        exclude_params = []
+        if exclude_keys:
+            placeholders = ','.join(['?' for _ in exclude_keys])
+            exclude_clause = f"AND key NOT IN ({placeholders})"
+            exclude_params = list(exclude_keys)
+
         query = (
-            f"SELECT source, translation, origin FROM translations "
-            f"WHERE source != '' AND translation != '' "
-            f"AND LENGTH(source) <= {max_src} "
-            f"AND ({where_clause}) "
-            f"ORDER BY CASE origin WHEN 'user' THEN 0 WHEN 'ai_corrected' THEN 1 ELSE 2 END, "
-            f"LENGTH(source) ASC "
-            f"LIMIT 50"
+            f"SELECT source, translation, origin, key FROM translations "
+            f"WHERE translation != '' "
+            f"{exclude_clause} "
+            f"AND ("
+            f"  (source != '' AND ({source_where}))"
+            f"  OR ((source = '' OR source IS NULL) AND ({key_where}) AND LENGTH(translation) <= 40)"
+            f") "
+            f"LIMIT 100"
         )
-        cursor.execute(query, params)
+        cursor.execute(query, exclude_params + source_like_params + key_like_params)
         rows = cursor.fetchall()
 
-        print(f"[TM-TERM-SEARCH] term='{term}', stems={stems}, word_groups={[list(g) for g in word_stem_groups]}, candidates={len(rows)}")
-        for r in rows[:5]:
-            print(f"[TM-TERM-SEARCH]   src='{(r['source'] or '')[:60]}' → '{(r['translation'] or '')[:40]}'")
+        print(f"[TM-TERM-SEARCH] term='{term}', candidates={len(rows)}")
 
         best = None
         best_score = 0.0
@@ -1053,141 +991,90 @@ class TranslationMemoryV2:
             source = row['source'] or ''
             translation = row['translation'] or ''
             origin = row['origin'] or 'ai'
+            row_key = row['key'] or ''
 
             has_cjk = bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', translation))
             if not has_cjk:
                 continue
 
-            src_clean = re.sub(r'&[0-9a-fk-or]', '', source).strip()
-            src_words = set(re.findall(r'[a-zA-Z]{2,}', src_clean.lower()))
-            src_stems = {self._stem(w) for w in src_words}
-
-            overlap = len(stems & src_stems)
-            ratio = overlap / len(stems) if stems else 0
-
-            if ratio < 0.6:
-                continue
-
-            score = ratio
-            if src_clean.lower() == term.lower():
-                score += 2.0
-            if abs(len(src_words) - len(words)) <= 1:
-                score += 0.5
-            if origin == 'user':
-                score += 0.5
-            elif origin == 'ai_corrected':
-                score += 0.3
-
             cleaned_trans = re.sub(r'&[0-9a-fk-or]', '', translation).strip()
-            trans_len = len(cleaned_trans)
-            if trans_len <= 15:
-                score += 0.3
-            elif trans_len <= 30:
-                score += 0.1
 
-            if score > best_score:
-                best_score = score
-                best = cleaned_trans
+            if source:
+                src_clean = re.sub(r'&[0-9a-fk-or]', '', source).strip()
 
-        if best and best_score >= 1.0:
-            print(f"[TM-TERM-SEARCH] source match: '{term}' → '{best}' (score={best_score:.2f})")
-            return best
+                if len(source) <= self._MAX_TERM_SOURCE_LEN:
+                    src_words = set(re.findall(r'[a-zA-Z]{2,}', src_clean.lower()))
+                    src_stems = {self._stem(w) for w in src_words}
 
-        all_variants = set()
-        for group in word_stem_groups:
-            all_variants.update(group)
-        key_variants = [v for v in all_variants if len(v) >= 3]
-        if not key_variants:
-            return None
+                    overlap = len(stems & src_stems)
+                    ratio = overlap / len(stems) if stems else 0
 
-        key_and_conditions = []
-        key_params = []
-        for group in word_stem_groups:
-            or_parts = [f"(key LIKE ?)" for _ in group]
-            key_and_conditions.append(f"({' OR '.join(or_parts)})")
-            key_params.extend([f'%{v}%' for v in group])
+                    if ratio < 0.6:
+                        continue
 
-        key_where = ' AND '.join(key_and_conditions)
+                    score = ratio
+                    if src_clean.lower() == term.lower():
+                        score += 2.0
+                    if abs(len(src_words) - len(words)) <= 1:
+                        score += 0.5
+                    if origin == 'user':
+                        score += 0.5
+                    elif origin == 'ai_corrected':
+                        score += 0.3
 
-        exclude_key_clause = ""
-        exclude_key_params = []
-        if exclude_keys:
-            key_placeholders = ','.join(['?' for _ in exclude_keys])
-            exclude_key_clause = f"AND key NOT IN ({key_placeholders})"
-            exclude_key_params = list(exclude_keys)
+                    trans_len = len(cleaned_trans)
+                    if trans_len <= 15:
+                        score += 0.3
+                    elif trans_len <= 30:
+                        score += 0.1
 
-        cursor.execute(
-            f"SELECT key, translation, origin FROM translations "
-            f"WHERE (source = '' OR source IS NULL) AND translation != '' "
-            f"AND LENGTH(translation) <= 40 "
-            f"{exclude_key_clause} "
-            f"AND ({key_where}) "
-            f"LIMIT 50",
-            exclude_key_params + key_params
-        )
-        key_rows = cursor.fetchall()
+                    if score > best_score:
+                        best_score = score
+                        best = cleaned_trans
+                        print(f"[TM-TERM-SEARCH]   source match: '{src_clean[:60]}' → '{cleaned_trans[:40]}' (score={score:.2f})")
+                else:
+                    pairs = self._extract_proper_noun_pairs(source, translation)
+                    for en_phrase, ja_phrase in pairs:
+                        en_words = set(re.findall(r'[a-zA-Z]{2,}', en_phrase.lower()))
+                        en_stems = {self._stem(w) for w in en_words}
+                        overlap = len(stems & en_stems)
+                        ratio = overlap / len(stems) if stems else 0
 
-        print(f"[TM-TERM-SEARCH] key search candidates: {len(key_rows)}")
-        for r in key_rows[:5]:
-            print(f"[TM-TERM-SEARCH]   key='{r['key']}' → '{(r['translation'] or '')[:40]}'")
+                        if ratio >= 0.6:
+                            score = 0.75 + (0.3 if origin == 'user' else 0.1 if origin == 'ai_corrected' else 0)
+                            if score > best_score:
+                                best_score = score
+                                best = ja_phrase
+                                print(f"[TM-TERM-SEARCH]   long source pair: '{en_phrase}' → '{ja_phrase}' (ratio={ratio:.2f})")
+                            break
+                    else:
+                        result = self._extract_noun_pair_from_text(source, translation, term, stems)
+                        if result and best_score < 0.5:
+                            best_score = 0.5
+                            best = result
+                            print(f"[TM-TERM-SEARCH]   long source text extraction: '{term}' → '{result}'")
+            else:
+                key_text = row_key.replace('_', ' ').replace('.', ' ').lower()
+                key_words = set(re.findall(r'[a-zA-Z]{2,}', key_text))
+                key_stems = {self._stem(w) for w in key_words}
 
-        for row in key_rows:
-            trans = row['translation'] or ''
-            if not trans:
-                continue
-            key_text = row['key'] or ''
-            key_clean = key_text.replace('_', ' ').replace('.', ' ').lower()
-            key_words = set(re.findall(r'[a-zA-Z]{2,}', key_clean))
-            key_stems = {self._stem(w) for w in key_words}
-
-            overlap = len(stems & key_stems)
-            ratio = overlap / len(stems) if stems else 0
-
-            if ratio >= 0.6 and re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', trans):
-                cleaned_trans = re.sub(r'&[0-9a-fk-or]', '', trans).strip()
-                print(f"[TM-TERM-SEARCH] key match: '{term}' → '{cleaned_trans}' (ratio={ratio:.2f})")
-                return cleaned_trans
-
-        print(f"[TM-TERM-SEARCH] Phase 3: searching long descriptions for '{term}'...")
-        long_query = (
-            f"SELECT source, translation, origin, key FROM translations "
-            f"WHERE source != '' AND translation != '' "
-            f"AND LENGTH(source) > {max_src} AND LENGTH(source) <= 500 "
-            f"AND ({where_clause}) "
-            f"LIMIT 20"
-        )
-        cursor.execute(long_query, params)
-        long_rows = cursor.fetchall()
-
-        print(f"[TM-TERM-SEARCH] Phase 3 long description candidates: {len(long_rows)}")
-
-        for row in long_rows:
-            source = row['source'] or ''
-            translation = row['translation'] or ''
-            row_key = row['key'] or ''
-
-            if row_key in exclude_keys:
-                continue
-
-            pairs = self._extract_proper_noun_pairs(source, translation)
-            found_in_pairs = False
-            for en_phrase, ja_phrase in pairs:
-                en_words = set(re.findall(r'[a-zA-Z]{2,}', en_phrase.lower()))
-                en_stems = {self._stem(w) for w in en_words}
-                overlap = len(stems & en_stems)
+                overlap = len(stems & key_stems)
                 ratio = overlap / len(stems) if stems else 0
 
                 if ratio >= 0.6:
-                    print(f"[TM-TERM-SEARCH] Phase 3 noun pair: '{en_phrase}' → '{ja_phrase}' (ratio={ratio:.2f})")
-                    return ja_phrase
-                found_in_pairs = True
+                    score = 0.7 + (0.2 if origin == 'user' else 0.1 if origin == 'ai_corrected' else 0)
+                    if len(cleaned_trans) <= 15:
+                        score += 0.2
+                    if score > best_score:
+                        best_score = score
+                        best = cleaned_trans
+                        print(f"[TM-TERM-SEARCH]   key match: '{row_key}' → '{cleaned_trans[:40]}' (ratio={ratio:.2f})")
 
-            if not found_in_pairs:
-                result = self._extract_noun_pair_from_text(source, translation, term, stems)
-                if result:
-                    print(f"[TM-TERM-SEARCH] Phase 3 text extraction: '{term}' → '{result}'")
-                    return result
+        if best and best_score >= 0.7:
+            print(f"[TM-TERM-SEARCH] result: '{term}' → '{best}' (best_score={best_score:.2f})")
+            return best
 
+        print(f"[TM-TERM-SEARCH] no match for '{term}' (best_score={best_score:.2f})")
         return None
 
     def _search_term_in_cross_mod(self, term: str, stems: set,
