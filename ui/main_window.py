@@ -569,23 +569,59 @@ class MainWindow(QMainWindow):
         
         self.loaded_mods[self.current_mod_path]["_translated"] = translated
         self.loaded_mods[self.current_mod_path]["_total"] = total
+        self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
         
         for i in range(self.mod_list.count()):
             item = self.mod_list.item(i)
             if item.data(Qt.UserRole) == self.current_mod_path:
                 mod_name = self.loaded_mods[self.current_mod_path]["name"]
                 item.setText(self._format_mod_display(mod_name, translated, total))
-                item.setToolTip(mod_name)
-                
-                if total > 0 and translated == total:
-                    item.setForeground(QColor("#4ade80"))
-                else:
-                    item.setForeground(QColor("#d4d4d4"))
+                item.setToolTip(self._get_mod_tooltip(self.loaded_mods[self.current_mod_path]))
+                item.setForeground(self._get_mod_progress_color(translated, total))
                 break
     
     def _count_translated(self, mod_data):
         translations = mod_data["translations"]
         return sum(1 for t in translations.values() if t)
+    
+    def _get_mod_progress_color(self, translated, total):
+        if total == 0:
+            return QColor("#d4d4d4")
+        ratio = translated / total
+        if ratio >= 1.0:
+            return QColor("#4ade80")
+        elif ratio > 0:
+            return QColor("#fbbf24")
+        else:
+            return QColor("#d4d4d4")
+
+    def _get_mod_tooltip(self, mod_data):
+        name = mod_data["name"]
+        translations = mod_data.get("translations", {})
+        originals = mod_data.get("original", {})
+        review_status = mod_data.get("review_status", {})
+        total = len(originals)
+        translated = sum(1 for t in translations.values() if t)
+        ratio = (translated / total * 100) if total > 0 else 0
+
+        ai_count = sum(1 for k in translations if translations.get(k) and review_status.get(k, {}).get("origin") == "ai")
+        tm_count = sum(1 for k in translations if translations.get(k) and review_status.get(k, {}).get("origin") == "tm")
+        user_count = sum(1 for k, v in translations.items() if v and review_status.get(k, {}).get("origin") == "user")
+        issue_count = sum(1 for k, v in review_status.items() if v.get("issues") and not v.get("reviewed", False))
+        locked_count = sum(1 for k, v in review_status.items() if v.get("locked", False))
+        char_count = mod_data.get("_char_count", 0)
+
+        lines = [
+            f"{name}",
+            f"翻訳率: {ratio:.0f}% ({translated}/{total})",
+            f"原文: {char_count:,} 文字",
+            f"├ AI翻訳: {ai_count}件",
+            f"├ TM適用: {tm_count}件",
+            f"├ ユーザー: {user_count}件",
+            f"├ 要確認: {issue_count}件",
+            f"└ 翻訳不要: {locked_count}件",
+        ]
+        return "\n".join(lines)
     
     def refresh_all_mod_colors(self):
         for i in range(self.mod_list.count()):
@@ -600,13 +636,10 @@ class MainWindow(QMainWindow):
                 
                 mod_name = mod_data["name"]
                 item.setText(self._format_mod_display(mod_name, translated, total))
-                item.setToolTip(f"{mod_name}\n原文: {char_count:,} 文字")
+                item.setToolTip(self._get_mod_tooltip(mod_data))
                 
-                if total > 0 and translated == total:
-                    item.setForeground(QColor("#4ade80"))
-                else:
-                    item.setForeground(QColor("#d4d4d4"))
-    
+                item.setForeground(self._get_mod_progress_color(translated, total))
+
     def _refresh_mod_list_items(self, mod_paths):
         for i in range(self.mod_list.count()):
             item = self.mod_list.item(i)
@@ -615,14 +648,10 @@ class MainWindow(QMainWindow):
                 mod_data = self.loaded_mods[mod_path]
                 total = len(mod_data["original"])
                 translated = self._count_translated(mod_data)
-                char_count = mod_data.get("_char_count", 0)
                 mod_name = mod_data["name"]
                 item.setText(self._format_mod_display(mod_name, translated, total))
-                item.setToolTip(f"{mod_name}\n原文: {char_count:,} 文字")
-                if total > 0 and translated == total:
-                    item.setForeground(QColor("#4ade80"))
-                else:
-                    item.setForeground(QColor("#d4d4d4"))
+                item.setToolTip(self._get_mod_tooltip(mod_data))
+                item.setForeground(self._get_mod_progress_color(translated, total))
     
     def _truncate_name(self, name, max_chars=20):
         if len(name) > max_chars:
@@ -841,10 +870,45 @@ class MainWindow(QMainWindow):
         menu.addAction(translate_selected_action)
         
         menu.addSeparator()
+
+        selected_rows = set()
+        for item in self.editor.table.selectedItems():
+            selected_rows.add(item.row())
+        keys = []
+        for row in selected_rows:
+            key = self.editor.table.item(row, 0).text()
+            keys.append(key)
+
+        if keys:
+            review = self.editor.review_status.get(keys[0], {})
+            is_locked = review.get("locked", False)
+
+            if is_locked:
+                unlock_action = QAction("翻訳必要としてマーク（ロック解除）", self)
+                unlock_action.triggered.connect(lambda: self._toggle_selected_lock(True))
+                menu.addAction(unlock_action)
+            else:
+                lock_action = QAction("翻訳不要としてマーク（ロック）", self)
+                lock_action.triggered.connect(lambda: self._toggle_selected_lock(False))
+                menu.addAction(lock_action)
+
+            validate_action = QAction("検証済みとしてマーク", self)
+            validate_action.triggered.connect(self._mark_selected_validated)
+            menu.addAction(validate_action)
+
+        menu.addSeparator()
         
         add_dictionary_action = QAction("辞書に追加", self)
         add_dictionary_action.triggered.connect(lambda: self.add_selection_to_glossary())
         menu.addAction(add_dictionary_action)
+
+        copy_orig_action = QAction("原文をコピー", self)
+        copy_orig_action.triggered.connect(self._copy_selected_originals)
+        menu.addAction(copy_orig_action)
+
+        copy_trans_action = QAction("訳文をコピー", self)
+        copy_trans_action.triggered.connect(self._copy_selected_translations)
+        menu.addAction(copy_trans_action)
         
         menu.addSeparator()
         
@@ -1240,13 +1304,10 @@ class MainWindow(QMainWindow):
             translated = self._count_translated(self.loaded_mods[quests_folder])
             
             item = QListWidgetItem(self._format_mod_display(f"[FTB] {modpack_name}", translated, total))
-            item.setToolTip(f"FTB Quests: {modpack_name}\n{quests_folder}")
+            item.setToolTip(self._get_mod_tooltip(self.loaded_mods[quests_folder]))
             item.setData(Qt.UserRole, quests_folder)
             
-            if total > 0 and translated == total:
-                item.setForeground(QColor("#4ade80"))
-            else:
-                item.setForeground(QColor("#d4d4d4"))
+            item.setForeground(self._get_mod_progress_color(translated, total))
             
             self.mod_list.addItem(item)
             
@@ -1301,13 +1362,10 @@ class MainWindow(QMainWindow):
             translated = self._count_translated(self.loaded_mods[datapack_path])
 
             item = QListWidgetItem(self._format_mod_display(f"[DP] {pack_name}", translated, total))
-            item.setToolTip(f"データパック: {pack_name}\n名前空間: {primary_ns}\n{datapack_path}")
+            item.setToolTip(self._get_mod_tooltip(self.loaded_mods[datapack_path]))
             item.setData(Qt.UserRole, datapack_path)
 
-            if total > 0 and translated == total:
-                item.setForeground(QColor("#4ade80"))
-            else:
-                item.setForeground(QColor("#d4d4d4"))
+            item.setForeground(self._get_mod_progress_color(translated, total))
 
             self.mod_list.addItem(item)
 
@@ -1516,7 +1574,7 @@ class MainWindow(QMainWindow):
             if bundled_translations:
                 self.loaded_mods[path]["translations"].update(bundled_translations)
                 bundled_review = {
-                    k: {"issues": [], "reviewed": True}
+                    k: {"issues": [], "reviewed": True, "origin": "bundled"}
                     for k in bundled_translations
                 }
                 if "review_status" not in self.loaded_mods[path]:
@@ -1555,7 +1613,8 @@ class MainWindow(QMainWindow):
                             is_user = reviewed_keys.get(key, {}).get("origin") == "user"
                             tm_review_status[key] = {
                                 "issues": [] if (is_reviewed or is_user) else ["TM未検証"],
-                                "reviewed": is_reviewed or is_user
+                                "reviewed": is_reviewed or is_user,
+                                "origin": "tm"
                             }
                         
                         self.loaded_mods[path]["translations"].update(memory_translations)
@@ -1567,13 +1626,10 @@ class MainWindow(QMainWindow):
             translated = self._count_translated(self.loaded_mods[path])
             
             item = QListWidgetItem(self._format_mod_display(mod_name, translated, total))
-            item.setToolTip(f"{mod_name}\n原文: {char_count:,} 文字")
+            item.setToolTip(self._get_mod_tooltip(self.loaded_mods[path]))
             item.setData(Qt.UserRole, path)
             
-            if total > 0 and translated == total:
-                item.setForeground(QColor("#4ade80"))
-            else:
-                item.setForeground(QColor("#d4d4d4"))
+            item.setForeground(self._get_mod_progress_color(translated, total))
             
             self.mod_list.addItem(item)
             
@@ -1828,6 +1884,65 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"トークン消費 — 入力: {prompt} / 出力: {completion} / 合計: {total}  (API: {calls}回)", 5000
         )
+
+    def _toggle_selected_lock(self, unlock):
+        selected_rows = set()
+        for item in self.editor.table.selectedItems():
+            selected_rows.add(item.row())
+        if not selected_rows:
+            return
+        keys = []
+        for row in selected_rows:
+            key = self.editor.table.item(row, 0).text()
+            keys.append(key)
+        self.editor.toggle_lock(keys, not unlock)
+        if self.current_mod_path and self.current_mod_path in self.loaded_mods:
+            self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
+            self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
+            self.refresh_all_mod_colors()
+        action = "解除" if unlock else "ロック"
+        self.statusBar().showMessage(f"{len(keys)} 件を{action}しました", 3000)
+
+    def _mark_selected_validated(self):
+        selected_rows = set()
+        for item in self.editor.table.selectedItems():
+            selected_rows.add(item.row())
+        if not selected_rows:
+            return
+        keys = []
+        for row in selected_rows:
+            key = self.editor.table.item(row, 0).text()
+            keys.append(key)
+        self.editor.mark_validated(keys)
+        if self.current_mod_path and self.current_mod_path in self.loaded_mods:
+            self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
+        self.statusBar().showMessage(f"{len(keys)} 件を検証済みにしました", 3000)
+
+    def _copy_selected_originals(self):
+        selected_rows = set()
+        for item in self.editor.table.selectedItems():
+            selected_rows.add(item.row())
+        texts = []
+        for row in sorted(selected_rows):
+            item = self.editor.table.item(row, 1)
+            if item:
+                texts.append(item.text())
+        if texts:
+            QApplication.clipboard().setText("\n".join(texts))
+            self.statusBar().showMessage(f"{len(texts)} 件の原文をコピーしました", 2000)
+
+    def _copy_selected_translations(self):
+        selected_rows = set()
+        for item in self.editor.table.selectedItems():
+            selected_rows.add(item.row())
+        texts = []
+        for row in sorted(selected_rows):
+            item = self.editor.table.item(row, 2)
+            if item:
+                texts.append(item.text())
+        if texts:
+            QApplication.clipboard().setText("\n".join(texts))
+            self.statusBar().showMessage(f"{len(texts)} 件の訳文をコピーしました", 2000)
 
     def mark_selected_reviewed(self):
         """Mark selected rows as reviewed."""
@@ -2108,6 +2223,7 @@ class MainWindow(QMainWindow):
             self.loaded_mods[mod_path]["translations"].update(results)
             if self.current_mod_path == mod_path:
                 self.editor.update_translations(results)
+                self.loaded_mods[mod_path]["review_status"] = self.editor.review_status
         
         self._batch_all_results.update(results)
         self._batch_completed_mods += 1
@@ -2352,6 +2468,7 @@ class MainWindow(QMainWindow):
         if self.current_mod_path:
             self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
             self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
+            self.refresh_all_mod_colors()
 
         self.progress_bar.hide()
         self.stop_translation_btn.hide()

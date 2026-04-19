@@ -1,8 +1,21 @@
 import re
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                                 QTableWidgetItem, QHeaderView, QLineEdit, QPushButton, QLabel, QComboBox, QSizePolicy)
 from PySide6.QtGui import QColor, QBrush, QUndoStack, QUndoCommand
 from PySide6.QtCore import Qt, Signal
+
+from logic.translator import should_skip_translation
+
+AUTO_LOCK_PATTERNS = [
+    re.compile(r'^[a-z]+:[a-z_./]+$', re.I),
+    re.compile(r'^[\d%\.\\\+\-:,/\s]+$'),
+    re.compile(r'^[\W\d\s]*$', re.U),
+    re.compile(r'^§[0-9a-fk-or]$', re.I),
+    re.compile(r'^~?-?\d*\.?\d*$', re.U),
+    re.compile(r'^#[0-9a-fA-F]{6}$'),
+    re.compile(r'^@\w+$'),
+    re.compile(r'^\w+\.\w+$'),
+]
 
 
 class TranslationEditCommand(QUndoCommand):
@@ -52,15 +65,37 @@ class EditorWidget(QWidget):
     searchAllModsRequested = Signal(str)
     selectionChanged = Signal(int)
 
-    _COLOR_TRANSLATED = QColor("#2f6b36")
-    _COLOR_TRANSLATED_FG = QColor("#ffffff")
-    _COLOR_ISSUES = QColor("#8b5a00")
-    _COLOR_ISSUES_FG = QColor("#ffcc66")
+    _COLOR_LOCKED = QColor("#4a4a5a")
+    _COLOR_LOCKED_FG = QColor("#8888aa")
+    _COLOR_UNTRANSLATED = QColor("#1a1a2e")
+    _COLOR_UNTRANSLATED_FG = QColor("#666688")
+    _COLOR_TM_MATCH = QColor("#2a4a5a")
+    _COLOR_TM_MATCH_FG = QColor("#88ccdd")
+    _COLOR_AI_TRANS = QColor("#2f6b36")
+    _COLOR_AI_TRANS_FG = QColor("#ffffff")
+    _COLOR_AI_ISSUES = QColor("#8b5a00")
+    _COLOR_AI_ISSUES_FG = QColor("#ffcc66")
+    _COLOR_USER_TRANS = QColor("#1a5a3a")
+    _COLOR_USER_TRANS_FG = QColor("#88eebb")
+    _COLOR_VALIDATED = QColor("#1a4a2a")
+    _COLOR_VALIDATED_FG = QColor("#66dd99")
     _COLOR_SAME = QColor("#6b5a2f")
     _COLOR_SAME_FG = QColor("#ffffff")
-    _BRUSH_TRANSLATED = QBrush(_COLOR_TRANSLATED, Qt.SolidPattern)
-    _BRUSH_ISSUES = QBrush(_COLOR_ISSUES, Qt.SolidPattern)
+    _COLOR_TRANSLATED = _COLOR_AI_TRANS
+    _COLOR_TRANSLATED_FG = _COLOR_AI_TRANS_FG
+    _COLOR_ISSUES = _COLOR_AI_ISSUES
+    _COLOR_ISSUES_FG = _COLOR_AI_ISSUES_FG
+
+    _BRUSH_LOCKED = QBrush(_COLOR_LOCKED, Qt.SolidPattern)
+    _BRUSH_UNTRANSLATED = QBrush(_COLOR_UNTRANSLATED, Qt.SolidPattern)
+    _BRUSH_TM_MATCH = QBrush(_COLOR_TM_MATCH, Qt.SolidPattern)
+    _BRUSH_AI_TRANS = QBrush(_COLOR_AI_TRANS, Qt.SolidPattern)
+    _BRUSH_AI_ISSUES = QBrush(_COLOR_AI_ISSUES, Qt.SolidPattern)
+    _BRUSH_USER_TRANS = QBrush(_COLOR_USER_TRANS, Qt.SolidPattern)
+    _BRUSH_VALIDATED = QBrush(_COLOR_VALIDATED, Qt.SolidPattern)
     _BRUSH_SAME = QBrush(_COLOR_SAME, Qt.SolidPattern)
+    _BRUSH_TRANSLATED = _BRUSH_AI_TRANS
+    _BRUSH_ISSUES = _BRUSH_AI_ISSUES
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -97,6 +132,10 @@ class EditorWidget(QWidget):
         self.filter_combo.addItem("ローマ字あり", 3)
         self.filter_combo.addItem("要確認", 4)
         self.filter_combo.addItem("翻訳済み", 5)
+        self.filter_combo.addItem("翻訳不要（ロック）", 6)
+        self.filter_combo.addItem("TM自動適用", 7)
+        self.filter_combo.addItem("AI翻訳のみ", 8)
+        self.filter_combo.addItem("ユーザー翻訳", 9)
         self.filter_combo.currentIndexChanged.connect(self.filter_table)
         toolbar.addWidget(self.filter_combo)
         
@@ -157,6 +196,11 @@ class EditorWidget(QWidget):
         item = self.table.item(row, col)
         if not item:
             return
+
+        key = self.table.item(row, 0).text()
+        review = self.review_status.get(key, {})
+        if review.get("locked", False):
+            return
         
         new_text = item.text()
         old_text = self._previous_cell_texts.get((row, col), "")
@@ -171,6 +215,10 @@ class EditorWidget(QWidget):
         
         key = self.table.item(row, 0).text()
         self.user_edited_keys.add(key)
+        
+        if key not in self.review_status:
+            self.review_status[key] = {"issues": [], "reviewed": False, "quality_score": 1.0}
+        self.review_status[key]["origin"] = "user"
         
         original = self.table.item(row, 1).text()
         self._update_row_color(row, new_text, original)
@@ -213,16 +261,49 @@ class EditorWidget(QWidget):
         self.table.setUpdatesEnabled(True)
         self._programmatic_update = False
 
+    def _is_lockable(self, key, original):
+        if should_skip_translation(original):
+            return True
+        trimmed = original.strip()
+        for pattern in AUTO_LOCK_PATTERNS:
+            if pattern.match(trimmed):
+                return True
+        return False
+
     def _update_row_color(self, row, translation, original):
-        if translation and translation != original:
-            key = self.table.item(row, 0).text()
-            review = self.review_status.get(key, {})
+        key = self.table.item(row, 0).text()
+        review = self.review_status.get(key, {})
+        origin = review.get("origin", "")
+        is_locked = review.get("locked", False)
+
+        if not is_locked and not translation and self._is_lockable(key, original):
+            is_locked = True
+
+        if is_locked:
+            brush, fg = self._BRUSH_LOCKED, self._COLOR_LOCKED_FG
+            item = self.table.item(row, 2)
+            if item:
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                if not translation:
+                    item.setText(original)
+                    self._previous_cell_texts[(row, 2)] = original
+        elif review.get("reviewed") and key in self.user_edited_keys:
+            brush, fg = self._BRUSH_VALIDATED, self._COLOR_VALIDATED_FG
+        elif key in self.user_edited_keys and translation and translation != original:
+            has_issues = bool(review.get("issues"))
+            if has_issues and not review.get("reviewed", False):
+                brush, fg = self._BRUSH_AI_ISSUES, self._COLOR_AI_ISSUES_FG
+            else:
+                brush, fg = self._BRUSH_USER_TRANS, self._COLOR_USER_TRANS_FG
+        elif translation and translation != original:
             has_issues = bool(review.get("issues"))
             is_reviewed = review.get("reviewed", False)
             if has_issues and not is_reviewed:
-                brush, fg = self._BRUSH_ISSUES, self._COLOR_ISSUES_FG
+                brush, fg = self._BRUSH_AI_ISSUES, self._COLOR_AI_ISSUES_FG
+            elif origin == "tm":
+                brush, fg = self._BRUSH_TM_MATCH, self._COLOR_TM_MATCH_FG
             else:
-                brush, fg = self._BRUSH_TRANSLATED, self._COLOR_TRANSLATED_FG
+                brush, fg = self._BRUSH_AI_TRANS, self._COLOR_AI_TRANS_FG
         elif translation and translation == original:
             brush, fg = self._BRUSH_SAME, self._COLOR_SAME_FG
         else:
@@ -232,7 +313,7 @@ class EditorWidget(QWidget):
                     item.setData(Qt.BackgroundRole, None)
                     item.setData(Qt.ForegroundRole, None)
             return
-        
+
         for col in range(3):
             item = self.table.item(row, col)
             if item:
@@ -258,8 +339,10 @@ class EditorWidget(QWidget):
             match_filter = True
             if filter_state == 1:  # Missing (untranslated)
                 match_filter = not translation
-            elif filter_state == 2:  # Same as original
-                match_filter = translation and translation == original
+            elif filter_state == 2:  # Same as original (excluding locked)
+                review = self.review_status.get(key, {})
+                is_locked = review.get("locked", False)
+                match_filter = translation and translation == original and not is_locked
             elif filter_state == 3:  # Contains Roman letters (excluding color codes and placeholders)
                 # Remove Minecraft color codes (§x and &x format)
                 text_without_codes = re.sub(r'[§&][0-9a-fk-or]', '', translation, flags=re.IGNORECASE)
@@ -272,6 +355,17 @@ class EditorWidget(QWidget):
                 match_filter = bool(review.get("issues")) and not review.get("reviewed", False)
             elif filter_state == 5:  # Translated (has translation, differs from original)
                 match_filter = bool(translation) and translation != original
+            elif filter_state == 6:  # Locked (translation not needed)
+                review = self.review_status.get(key, {})
+                match_filter = review.get("locked", False) or (not translation and self._is_lockable(key, original))
+            elif filter_state == 7:  # TM auto-applied
+                review = self.review_status.get(key, {})
+                match_filter = review.get("origin") == "tm"
+            elif filter_state == 8:  # AI translated only
+                review = self.review_status.get(key, {})
+                match_filter = review.get("origin") == "ai"
+            elif filter_state == 9:  # User translated
+                match_filter = key in self.user_edited_keys and bool(translation)
             
             self.table.setRowHidden(i, not (match_search and match_filter))
         
@@ -373,6 +467,48 @@ class EditorWidget(QWidget):
         for key in keys:
             if key in self.review_status:
                 self.review_status[key]["reviewed"] = True
+            else:
+                self.review_status[key] = {"issues": [], "reviewed": True, "quality_score": 1.0}
+            row = self._key_to_row.get(key)
+            if row is not None:
+                original = self.table.item(row, 1).text()
+                translation = self.table.item(row, 2).text()
+                self._update_row_color(row, translation, original)
+        self.table.setUpdatesEnabled(True)
+
+    def toggle_lock(self, keys, lock):
+        self.table.setUpdatesEnabled(False)
+        for key in keys:
+            if key not in self.review_status:
+                self.review_status[key] = {"issues": [], "reviewed": False, "quality_score": 1.0}
+            self.review_status[key]["locked"] = lock
+            if lock:
+                self.review_status[key]["origin"] = "skipped"
+            row = self._key_to_row.get(key)
+            if row is not None:
+                original = self.table.item(row, 1).text()
+                translation = self.table.item(row, 2).text()
+                item = self.table.item(row, 2)
+                if lock:
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    if not translation:
+                        item.setText(original)
+                        self._previous_cell_texts[(row, 2)] = original
+                        translation = original
+                else:
+                    item.setFlags(item.flags() | Qt.ItemIsEditable)
+                self._update_row_color(row, translation, original)
+        self.table.setUpdatesEnabled(True)
+        self._emit_stats()
+
+    def mark_validated(self, keys):
+        self.table.setUpdatesEnabled(False)
+        for key in keys:
+            if key in self.review_status:
+                self.review_status[key]["reviewed"] = True
+            else:
+                self.review_status[key] = {"issues": [], "reviewed": True, "quality_score": 1.0}
+            self.user_edited_keys.add(key)
             row = self._key_to_row.get(key)
             if row is not None:
                 original = self.table.item(row, 1).text()

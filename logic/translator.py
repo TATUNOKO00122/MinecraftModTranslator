@@ -902,6 +902,7 @@ class TranslatorThread(QThread):
         for key, text in items.items():
             if should_skip_translation(text, self.target_lang):
                 final_results[key] = text
+                validation_results[key] = {"issues": [], "reviewed": True, "quality_score": 1.0, "origin": "skipped", "locked": True}
             else:
                 translatable[key] = text
         
@@ -1091,6 +1092,10 @@ class TranslatorThread(QThread):
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
                     validation_results[key] = {"issues": issues, "reviewed": False, "quality_score": quality}
+                if key not in validation_results:
+                    validation_results[key] = {"issues": [], "reviewed": False, "quality_score": quality, "origin": "ai"}
+                else:
+                    validation_results[key]["origin"] = "ai"
 
                 unique_results[key] = restored_text
             else:
@@ -1100,6 +1105,10 @@ class TranslatorThread(QThread):
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
                     validation_results[key] = {"issues": issues, "reviewed": False, "quality_score": quality}
+                if key not in validation_results:
+                    validation_results[key] = {"issues": [], "reviewed": False, "quality_score": quality, "origin": "ai"}
+                else:
+                    validation_results[key]["origin"] = "ai"
 
                 unique_results[key] = translated_text
 
