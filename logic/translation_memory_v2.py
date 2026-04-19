@@ -1050,10 +1050,16 @@ class TranslationMemoryV2:
 
         exclude_keys = exclude_keys or set()
 
-        all_text = " ".join(t for t in batch_texts if isinstance(t, str))
-        cleaned = re.sub(r'&[0-9a-fk-or]', '', all_text)
-
-        terms = self._extract_terms_from_text(cleaned)
+        seen_terms = {}
+        for t in batch_texts:
+            if not isinstance(t, str):
+                continue
+            cleaned = re.sub(r'&[0-9a-fk-or]', '', t)
+            for term, stems in self._extract_terms_from_text(cleaned):
+                key = term.lower()
+                if key not in seen_terms:
+                    seen_terms[key] = (term, stems)
+        terms = list(seen_terms.values())
         if not terms:
             return []
 
