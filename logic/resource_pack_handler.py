@@ -84,6 +84,7 @@ class ResourcePackImportThread(QThread):
             mod_path: {
                 "name": mod_data["name"],
                 "original_keys": set(mod_data["original"].keys()),
+                "translated_keys": {k for k, v in mod_data.get("translations", {}).items() if v and str(v).strip()},
                 "target_file": mod_data["target_file"],
                 "type": mod_data.get("type", "mod"),
             }
@@ -240,6 +241,8 @@ class ResourcePackImportThread(QThread):
             if found_translations is not None:
                 pack_keys = translation_key_sets.get(pack_path, set(found_translations.keys()))
                 matching_keys = pack_keys & mod_keys
+                translated_keys = snap.get("translated_keys", set())
+                matching_keys = matching_keys - translated_keys
                 if matching_keys:
                     updates = {}
                     for key in matching_keys:

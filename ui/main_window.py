@@ -1100,16 +1100,22 @@ class MainWindow(QMainWindow):
             self.editor._programmatic_update = True
             self.editor.table.setUpdatesEnabled(False)
             mod_data = self.loaded_mods.get(self.current_mod_path)
+            cleared_keys = []
             for row in selected_rows:
                 key_item = self.editor.table.item(row, 0)
                 if key_item and mod_data:
-                    mod_data["translations"].pop(key_item.text(), None)
+                    key = key_item.text()
+                    if key in mod_data["translations"]:
+                        cleared_keys.append(key)
+                    mod_data["translations"].pop(key, None)
                 self.editor.table.item(row, 2).setText("")
                 self.editor._previous_cell_texts[(row, 2)] = ""
             self.editor.table.setUpdatesEnabled(True)
             self.editor._programmatic_update = False
             self.editor.undo_stack.clear()
             self.editor._emit_stats()
+            if cleared_keys:
+                self.memory.delete(cleared_keys)
             self.refresh_all_mod_colors()
             self.statusBar().showMessage(f"{len(selected_rows)} 行の翻訳をクリアしました", 3000)
 
@@ -1126,7 +1132,10 @@ class MainWindow(QMainWindow):
         )
         
         if confirm == QMessageBox.Yes:
+            cleared_keys = list(mod_data["translations"].keys())
             mod_data["translations"] = {}
+            if cleared_keys:
+                self.memory.delete(cleared_keys)
             self.editor.undo_stack.clear()
             self.editor.load_data(mod_data["original"], {})
             self.refresh_all_mod_colors()
@@ -1151,8 +1160,12 @@ class MainWindow(QMainWindow):
         )
         
         if confirm == QMessageBox.Yes:
+            all_cleared_keys = []
             for path, mod_data in mods_to_clear:
+                all_cleared_keys.extend(mod_data["translations"].keys())
                 mod_data["translations"] = {}
+            if all_cleared_keys:
+                self.memory.delete(all_cleared_keys)
             
             if self.current_mod_path and self.loaded_mods[self.current_mod_path].get("type") != "ftbquest":
                 self.editor.undo_stack.clear()
