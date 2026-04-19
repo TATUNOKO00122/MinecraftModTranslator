@@ -145,7 +145,7 @@ class ResourcePackImportThread(QThread):
                     continue
                 if (i + 1) % progress_interval == 0 or i + 1 == total_files:
                     self.progress.emit(i + 1, total_files, "read")
-        else:
+        elif zipfile.is_zipfile(self.path):
             with zipfile.ZipFile(self.path, 'r') as zf:
                 namelist = zf.namelist()
                 files_to_scan = [f for f in namelist if f.endswith(f'{self.target_lang}.json') or f.endswith(f'{self.target_lang}.lang')]
@@ -169,6 +169,21 @@ class ResourcePackImportThread(QThread):
                         continue
                     if (i + 1) % progress_interval == 0 or i + 1 == total_files:
                         self.progress.emit(i + 1, total_files, "read")
+        else:
+            basename = os.path.basename(self.path)
+            if basename.endswith(f'{self.target_lang}.json') or basename.endswith(f'{self.target_lang}.lang'):
+                try:
+                    with open(self.path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    if self.path.endswith('.json'):
+                        translations = json.loads(content)
+                    else:
+                        translations = self.file_handler._parse_lang(content)
+                    if translations:
+                        all_translations[basename] = translations
+                except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+                    pass
+                self.progress.emit(1, 1, "read")
 
     def _match_and_apply(self, all_translations):
         t0 = time.time()

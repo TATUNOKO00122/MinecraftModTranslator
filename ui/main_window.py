@@ -1275,11 +1275,11 @@ class MainWindow(QMainWindow):
             if total_steps > 0 and not getattr(self, '_suppress_busy', False):
                 self._close_busy()
             
-            self.statusBar().showMessage("読み込み完了", 3000)
-            
-            if loaded_items and not silent:
-                QMessageBox.information(self, "読み込み完了", 
-                    f"読み込み完了: {', '.join(loaded_items)}")
+            if loaded_items:
+                self.statusBar().showMessage("読み込み完了", 3000)
+                if not silent:
+                    QMessageBox.information(self, "読み込み完了", 
+                        f"読み込み完了: {', '.join(loaded_items)}")
                 return
         
         source_type = self.detect_source_type(path)
@@ -1412,14 +1412,21 @@ class MainWindow(QMainWindow):
                         if target_lang in f:
                             has_target = True
             else:
-                with zipfile.ZipFile(path, 'r') as zf:
-                    for f in zf.namelist():
-                        if 'pack.mcmeta' in f:
-                            has_mcmeta = True
-                        if 'en_us' in f:
-                            has_en = True
-                        if target_lang in f:
-                            has_target = True
+                try:
+                    with zipfile.ZipFile(path, 'r') as zf:
+                        for f in zf.namelist():
+                            if 'pack.mcmeta' in f:
+                                has_mcmeta = True
+                            if 'en_us' in f:
+                                has_en = True
+                            if target_lang in f:
+                                has_target = True
+                except zipfile.BadZipFile:
+                    basename = os.path.basename(path)
+                    if 'en_us' in basename:
+                        has_en = True
+                    if target_lang in basename:
+                        has_target = True
         except:
             return None
         
