@@ -842,14 +842,17 @@ class MainWindow(QMainWindow):
             
             if not found:
                 for key, original in mod_data["original"].items():
-                    if search_text in key or search_text in original.lower():
+                    original_text = original if isinstance(original, str) else str(original)
+                    if search_text in key or search_text in original_text.lower():
                         found = True
                         break
             
             if not found:
                 for translation in mod_data["translations"].values():
-                    if translation and search_text in translation.lower():
-                        found = True
+                    if translation:
+                        trans_text = translation if isinstance(translation, str) else str(translation)
+                        if search_text in trans_text.lower():
+                            found = True
                         break
             
             item.setHidden(not found)
