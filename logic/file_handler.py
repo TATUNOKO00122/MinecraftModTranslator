@@ -2,6 +2,7 @@ import zipfile
 import json
 import os
 import re
+import io
 
 PACK_FORMATS = {
     "1.16.x": 6,
@@ -54,9 +55,21 @@ class FileHandler:
         """Normalize all translation values to fix double escapes."""
         return {k: self._normalize_escapes(v) for k, v in translations.items()}
     
+    def _is_lang_file(self, filename):
+        return filename.endswith('.json') or filename.endswith('.lang') or filename.endswith('.toml')
+
+    def _is_lang_path(self, path):
+        if '/lang/' not in path:
+            return False
+        if path.startswith('assets/') or path.startswith('data/'):
+            return True
+        return False
+
     def load_zip(self, file_path):
         """
         Loads a zip/jar file and finds translation files.
+        Scans assets/*/lang/ and data/*/lang/ for .json, .lang, .toml files.
+        Also scans nested JARs inside META-INF/jars/.
         Returns: (mod_name, found_files)
         """
         if not os.path.exists(file_path):
@@ -71,9 +84,25 @@ class FileHandler:
                 for f in file_list:
                     if not self._is_safe_zip_path(f):
                         continue
-                    if f.startswith('assets/') and '/lang/' in f:
-                        if f.endswith('.json') or f.endswith('.lang'):
-                            found_files.append(f)
+                    if self._is_lang_path(f) and self._is_lang_file(f):
+                        found_files.append(f)
+
+                nested_jars = [f for f in file_list
+                               if f.startswith('META-INF/jars/') and f.endswith('.jar')]
+                for nested in nested_jars:
+                    if not self._is_safe_zip_path(nested):
+                        continue
+                    try:
+                        with zf.open(nested) as nested_file:
+                            nested_data = io.BytesIO(nested_file.read())
+                            with zipfile.ZipFile(nested_data, 'r') as nzf:
+                                for nf in nzf.namelist():
+                                    if not self._is_safe_zip_path(nf):
+                                        continue
+                                    if self._is_lang_path(nf) and self._is_lang_file(nf):
+                                        found_files.append(f"jarjar:{nested}!{nf}")
+                    except (zipfile.BadZipFile, OSError):
+                        pass
         except zipfile.BadZipFile:
             raise Exception("Invalid ZIP/JAR file")
             
@@ -93,22 +122,62 @@ class FileHandler:
         found_files = []
         for root, dirs, files in os.walk(folder_path):
             for f in files:
-                if f.endswith('.json') or f.endswith('.lang'):
-                    full_path = os.path.join(root, f)
-                    rel_path = os.path.relpath(full_path, folder_path)
-                    if ('assets' in rel_path and 'lang' in rel_path) or \
-                       ('data' in rel_path and 'lang' in rel_path):
-                        found_files.append(rel_path)
+                if not self._is_lang_file(f):
+                    continue
+                full_path = os.path.join(root, f)
+                rel_path = os.path.relpath(full_path, folder_path)
+                if ('assets' in rel_path and 'lang' in rel_path) or \
+                   ('data' in rel_path and 'lang' in rel_path):
+                    found_files.append(rel_path)
             
         return mod_name, found_files
 
     def read_translation_file(self, source_path, internal_path):
-        """Reads a translation file from a zip or folder."""
-        # Check if source is a folder
+        if internal_path.startswith("jarjar:"):
+            return self._read_from_nested_jar(source_path, internal_path)
         if os.path.isdir(source_path):
             return self.read_translation_file_from_folder(source_path, internal_path)
         else:
             return self.read_translation_file_from_zip(source_path, internal_path)
+
+    def _read_from_nested_jar(self, source_path, internal_path):
+        prefix = "jarjar:"
+        rest = internal_path[len(prefix):]
+        sep = rest.index('!')
+        outer_entry = rest[:sep]
+        inner_path = rest[sep + 1:]
+
+        if not self._is_safe_zip_path(outer_entry) or not self._is_safe_zip_path(inner_path):
+            raise ValueError(f"安全でないパス: {internal_path}")
+
+        with zipfile.ZipFile(source_path, 'r') as outer_zf:
+            with outer_zf.open(outer_entry) as nested_file:
+                nested_data = io.BytesIO(nested_file.read())
+                with zipfile.ZipFile(nested_data, 'r') as inner_zf:
+                    with inner_zf.open(inner_path) as f:
+                        content = f.read().decode('utf-8', errors='replace')
+                        return self._parse_lang_content(content, inner_path)
+
+    @staticmethod
+    def _clean_json(content):
+        content = content.lstrip('\ufeff')
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            cleaned = re.sub(r',\s*}', '}', content)
+            cleaned = re.sub(r',\s*]', ']', cleaned)
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                return {}
+
+    def _parse_lang_content(self, content, path):
+        if path.endswith('.json'):
+            return self._clean_json(content)
+        elif path.endswith('.toml'):
+            return self._parse_toml_lang(content)
+        else:
+            return self._parse_lang(content)
     
     def read_translation_file_from_zip(self, zip_path, internal_path):
         if not self._is_safe_zip_path(internal_path):
@@ -116,17 +185,9 @@ class FileHandler:
         with zipfile.ZipFile(zip_path, 'r') as zf:
             with zf.open(internal_path) as f:
                 content = f.read().decode('utf-8', errors='replace')
-                
-                if internal_path.endswith('.json'):
-                    try:
-                        return json.loads(content)
-                    except json.JSONDecodeError:
-                        return {}
-                else:
-                    return self._parse_lang(content)
+                return self._parse_lang_content(content, internal_path)
 
     def read_translation_file_from_folder(self, folder_path, internal_path):
-        """Reads a translation file from a folder."""
         full_path = os.path.join(folder_path, internal_path)
         if not os.path.exists(full_path):
             return {}
@@ -134,13 +195,7 @@ class FileHandler:
         with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
             
-        if internal_path.endswith('.json'):
-            try:
-                return json.loads(content)
-            except json.JSONDecodeError:
-                return {}
-        else:
-            return self._parse_lang(content)
+        return self._parse_lang_content(content, internal_path)
 
     def _parse_lang(self, content):
         result = {}
@@ -152,8 +207,38 @@ class FileHandler:
             result[key.strip()] = val.strip()
         return result
 
+    def _parse_toml_lang(self, content):
+        result = {}
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#') or line.startswith('['):
+                continue
+            if '=' not in line:
+                continue
+            key, val = line.split('=', 1)
+            key = key.strip()
+            val = val.strip()
+            if val.startswith('"') and val.endswith('"') and len(val) >= 2:
+                val = val[1:-1]
+                val = val.replace('\\"', '"').replace('\\\\', '\\')
+            elif val.startswith("'") and val.endswith("'") and len(val) >= 2:
+                val = val[1:-1]
+            else:
+                continue
+            result[key] = val
+        return result
+
+    @staticmethod
+    def _ensure_json_ext(path):
+        if path.endswith('.toml'):
+            return path[:-5] + '.json'
+        if path.endswith('.lang'):
+            return path[:-5] + '.json'
+        return path
+
     def save_resource_pack(self, output_path, mod_name, translations, lang_path="en_us.json",
                            pack_format=15, target_lang="ja_jp"):
+        lang_path = self._ensure_json_ext(lang_path)
         target_path = lang_path.replace('en_us', target_lang)
         if target_path == lang_path and target_lang not in target_path:
              pass 
@@ -200,7 +285,7 @@ class FileHandler:
             if not translations:
                 continue
                 
-            target_path = mod["target_file"].replace('en_us', target_lang)
+            target_path = self._ensure_json_ext(mod["target_file"]).replace('en_us', target_lang)
             
             full_target_path = os.path.join(output_path, target_path)
             real_output = os.path.realpath(output_path)

@@ -155,6 +155,7 @@ def _find_mod_jar(mods_dir, namespace):
 
 
 def _parse_lang_json(content):
+    content = content.lstrip('\ufeff')
     try:
         return json.loads(content)
     except json.JSONDecodeError:

@@ -18,6 +18,7 @@ from logic.translation_memory import TranslationMemory
 from logic.glossary import Glossary
 from logic import ftbquest_handler
 from logic import datapack_handler
+from logic import patchouli_handler
 from ui.editor_widget import EditorWidget
 from ui.settings_dialog import SettingsDialog
 from ui.glossary_dialog import GlossaryDialog
@@ -730,8 +731,8 @@ class MainWindow(QMainWindow):
                 is_dp = mod_data.get("type") == "datapack"
                 item.setHidden(not is_dp)
             elif filter_type == "mod":
-                is_ftb = mod_data.get("type") == "ftbquest"
-                item.setHidden(is_ftb)
+                is_special = mod_data.get("type") in ("ftbquest", "datapack", "patchouli")
+                item.setHidden(is_special)
 
     def sort_mod_list(self):
         sort_type = self.mod_sort.currentData()
@@ -747,7 +748,7 @@ class MainWindow(QMainWindow):
                 translated = mod_data.get("_translated", self._count_translated(mod_data))
                 rate = translated / total if total > 0 else 0
                 load_index = load_order_map.get(mod_path, 9999)
-                is_ftb = 0 if mod_data.get("type") in ("ftbquest", "datapack") else 1
+                is_ftb = 0 if mod_data.get("type") in ("ftbquest", "datapack", "patchouli") else 1
                 items_data.append({
                     "path": mod_path,
                     "name": mod_data["name"],
@@ -1246,7 +1247,14 @@ class MainWindow(QMainWindow):
                     if datapack_handler.detect_datapack(os.path.join(openloader_dir, d))
                 ]
                 total_steps += len(dp_dirs)
-            if not loaded_items and not mod_files and not ftbquest_folder and not dp_dirs:
+
+            patchouli_dirs = patchouli_handler.detect_patchouli_books(path)
+            data_dir = os.path.join(path, "data")
+            if os.path.isdir(data_dir):
+                patchouli_dirs.extend(patchouli_handler.detect_patchouli_in_datapack(data_dir))
+            total_steps += len(patchouli_dirs)
+
+            if not loaded_items and not mod_files and not ftbquest_folder and not dp_dirs and not patchouli_dirs:
                 if datapack_handler.detect_datapack(path):
                     total_steps += 1
             
@@ -1283,6 +1291,14 @@ class MainWindow(QMainWindow):
                 self.load_datapack(dp_dir, mods_dir=mods_folder)
                 loaded_items.append(f"データパック: {os.path.basename(dp_dir)}")
 
+            for p_dir in patchouli_dirs:
+                step += 1
+                if not getattr(self, '_suppress_busy', False):
+                    self._update_busy_message(f"Patchouli附属書を読み込み中... ({step}/{total_steps})")
+                    self._update_busy_progress(step, total_steps)
+                self.load_patchouli(p_dir)
+                loaded_items.append(f"Patchouli: {os.path.basename(p_dir)}")
+
             if not loaded_items and datapack_handler.detect_datapack(path):
                 self.load_datapack(path)
                 loaded_items.append("データパック")
@@ -1305,6 +1321,48 @@ class MainWindow(QMainWindow):
         else:
             self.load_source(path)
     
+    def load_patchouli(self, book_dir, book_id=None):
+        if book_dir in self.loaded_mods:
+            return
+
+        try:
+            book_id, lang_dict = patchouli_handler.load_patchouli_book(book_dir, book_id)
+
+            if not lang_dict:
+                print(f"Skipping Patchouli book {book_id}: No translatable text found.")
+                return
+
+            self.loaded_mods[book_dir] = {
+                "name": f"[Patchouli] {book_id}",
+                "original": lang_dict,
+                "translations": {},
+                "files": [],
+                "target_file": f"patchouli/{book_id}",
+                "type": "patchouli"
+            }
+
+            memory_translations = self.memory.apply_to(lang_dict, mod_name=f"[Patchouli] {book_id}")
+            if memory_translations:
+                self.loaded_mods[book_dir]["translations"].update(memory_translations)
+
+            total = len(lang_dict)
+            translated = self._count_translated(self.loaded_mods[book_dir])
+
+            item = QListWidgetItem(self._format_mod_display(f"[P] {book_id}", translated, total))
+            item.setToolTip(self._get_mod_tooltip(self.loaded_mods[book_dir]))
+            item.setData(Qt.UserRole, book_dir)
+            item.setForeground(self._get_mod_progress_color(translated, total))
+            self.mod_list.addItem(item)
+
+            if book_dir not in self._mod_load_order:
+                self._mod_load_order.append(book_dir)
+
+            if self.mod_list.count() == 1:
+                self.mod_list.setCurrentItem(item)
+
+        except Exception as e:
+            QMessageBox.critical(self, "エラー", f"Patchouli附属書の読み込みに失敗しました:\n{e}")
+
     def load_ftbquest(self, quests_folder, modpack_name):
         """Load FTB Quest files and extract translatable text"""
         if quests_folder in self.loaded_mods:
@@ -1538,18 +1596,27 @@ class MainWindow(QMainWindow):
             self.rp_thread = None
 
     def _load_bundled_translations(self, source_path, en_target, found_files, target_lang, original_data):
-        """MOD内に同梱されているターゲット言語ファイル(ja_jp.json等)から既存翻訳を読み込む"""
         en_dir = os.path.dirname(en_target)
         en_basename = os.path.basename(en_target)
-        target_basename = en_basename.replace('en_us', target_lang)
-        if target_basename == en_basename:
+
+        candidates = []
+        for ext in ('.json', '.toml', '.lang'):
+            candidate_basename = en_basename.replace('en_us', target_lang)
+            if not candidate_basename.endswith(ext):
+                base_stem = os.path.splitext(candidate_basename)[0]
+                candidate_basename = base_stem + ext
+            candidates.append(candidate_basename)
+
+        if not candidates:
             return {}
-        target_path = en_dir + '/' + target_basename if en_dir else target_basename
 
         matched = None
         for f in found_files:
-            if f == target_path or f.endswith('/' + target_basename) or f == target_basename:
-                matched = f
+            for c in candidates:
+                if f == (en_dir + '/' + c if en_dir else c) or f.endswith('/' + c) or f == c:
+                    matched = f
+                    break
+            if matched:
                 break
         if not matched:
             return {}
@@ -1580,8 +1647,9 @@ class MainWindow(QMainWindow):
                 return
             
             # Select target
-            target = next((f for f in found_files if 'en_us.json' in f), 
-                          next((f for f in found_files if 'en_us.lang' in f), found_files[0]))
+            target = next((f for f in found_files if 'en_us.json' in f),
+                          next((f for f in found_files if 'en_us.toml' in f),
+                          next((f for f in found_files if 'en_us.lang' in f), found_files[0])))
             
             data = self.file_handler.read_translation_file(path, target)
             
@@ -2811,6 +2879,9 @@ class MainWindow(QMainWindow):
         if mod_data.get("type") == "datapack":
             namespace = mod_data.get("namespace", "unknown")
             default_folder_name = f"datapack-{namespace}-resources"
+        elif mod_data.get("type") == "patchouli":
+            book_id = mod_data["name"].replace("[Patchouli] ", "")
+            default_folder_name = f"patchouli-{book_id}-resources"
         else:
             default_folder_name = f"{mod_data['name']}-resources"
         
@@ -2847,6 +2918,14 @@ class MainWindow(QMainWindow):
                         pack_format=settings.get("pack_format", 15),
                         target_lang=settings.get("target_lang", "ja_jp")
                     )
+                elif mod_data.get("type") == "patchouli":
+                    book_id = mod_data["name"].replace("[Patchouli] ", "")
+                    non_empty = {k: v for k, v in current_translations.items() if v}
+                    if non_empty:
+                        lang_dir = os.path.join(save_path, "assets", book_id, "lang")
+                        os.makedirs(lang_dir, exist_ok=True)
+                        with open(os.path.join(lang_dir, f"{settings.get('target_lang', 'ja_jp')}.json"), 'w', encoding='utf-8') as f:
+                            json.dump(non_empty, f, ensure_ascii=False, indent=2)
                 else:
                     self.file_handler.save_resource_pack(
                         save_path, 
@@ -2904,7 +2983,7 @@ class MainWindow(QMainWindow):
                 ftb_count = 0
                 
                 for mod_data in mod_data_list:
-                    if mod_data.get("type") in ("ftbquest", "datapack"):
+                    if mod_data.get("type") in ("ftbquest", "datapack", "patchouli"):
                         continue
                         
                     translations = mod_data["translations"]
@@ -2977,12 +3056,31 @@ class MainWindow(QMainWindow):
                     dp_count += 1
                     self.memory.update(translations)
                 
+                p_count = 0
+                for path, mod_data in self.loaded_mods.items():
+                    if mod_data.get("type") != "patchouli":
+                        continue
+                    translations = mod_data["translations"]
+                    if not translations:
+                        continue
+                    book_id = mod_data["name"].replace("[Patchouli] ", "")
+                    non_empty = {k: v for k, v in translations.items() if v}
+                    if non_empty:
+                        lang_dir = os.path.join(parent_dir, "assets", book_id, "lang")
+                        os.makedirs(lang_dir, exist_ok=True)
+                        with open(os.path.join(lang_dir, f"{target_lang}.json"), 'w', encoding='utf-8') as f:
+                            json.dump(non_empty, f, ensure_ascii=False, indent=2)
+                    p_count += 1
+                    self.memory.update(translations)
+                
                 msg = f"既存リソースパックに統合しました:\n{parent_dir}\n"
                 msg += f"MOD: {integrated_count} 件"
                 if ftb_count > 0:
                     msg += f"\nFTBクエスト: {ftb_count} 件"
                 if dp_count > 0:
                     msg += f"\nデータパック: {dp_count} 件"
+                if p_count > 0:
+                    msg += f"\nPatchouli附属書: {p_count} 件"
                 self._close_busy()
                 QMessageBox.information(self, "成功", msg)
             else:
@@ -2999,7 +3097,8 @@ class MainWindow(QMainWindow):
                 
                 ftb_mods = [m for m in mod_data_list if m.get("type") == "ftbquest"]
                 dp_mods = [m for m in mod_data_list if m.get("type") == "datapack"]
-                regular_mods = [m for m in mod_data_list if m.get("type") not in ("ftbquest", "datapack")]
+                patchouli_mods = [m for m in mod_data_list if m.get("type") == "patchouli"]
+                regular_mods = [m for m in mod_data_list if m.get("type") not in ("ftbquest", "datapack", "patchouli")]
                 
                 if regular_mods:
                     self.file_handler.save_merged_resource_pack(
@@ -3035,6 +3134,21 @@ class MainWindow(QMainWindow):
                             pack_format=pack_format,
                             target_lang=target_lang
                         )
+
+                for p_mod in patchouli_mods:
+                    p_path = None
+                    for path_key, data in self.loaded_mods.items():
+                        if data == p_mod:
+                            p_path = path_key
+                            break
+                    if p_path:
+                        book_id = p_mod["name"].replace("[Patchouli] ", "")
+                        translations = {k: v for k, v in p_mod.get("translations", {}).items() if v}
+                        if translations:
+                            lang_dir = os.path.join(save_path, "assets", book_id, "lang")
+                            os.makedirs(lang_dir, exist_ok=True)
+                            with open(os.path.join(lang_dir, f"{target_lang}.json"), 'w', encoding='utf-8') as f:
+                                json.dump(translations, f, ensure_ascii=False, indent=2)
                 
                 for mod in mod_data_list:
                     self.memory.update(mod["translations"])
@@ -3044,6 +3158,8 @@ class MainWindow(QMainWindow):
                     msg += f"\n(FTBクエスト {len(ftb_mods)} 件の言語ファイルを含む)"
                 if dp_mods:
                     msg += f"\n(データパック {len(dp_mods)} 件の言語ファイルを含む)"
+                if patchouli_mods:
+                    msg += f"\n(Patchouli附属書 {len(patchouli_mods)} 件の言語ファイルを含む)"
                 self._close_busy()
                 QMessageBox.information(self, "成功", msg)
         except Exception as e:
