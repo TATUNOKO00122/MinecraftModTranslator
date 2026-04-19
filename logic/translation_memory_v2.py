@@ -952,10 +952,7 @@ class TranslationMemoryV2:
             for en_phrase, ja_phrase in pairs:
                 scored.append((1.5 * origin_w, 1.0, en_phrase, ja_phrase))
 
-        empty_source_results = self._search_empty_source_pairs(self._get_connection().cursor(), batch_texts)
-        scored.extend(empty_source_results)
-
-        print(f"[TM-SIMILAR] scored={len(scored)}, long_matched={len(long_matched)}, empty_source={len(empty_source_results)}, total={_time.perf_counter()-t0:.3f}s")
+        print(f"[TM-SIMILAR] scored={len(scored)}, long_matched={len(long_matched)}, total={_time.perf_counter()-t0:.3f}s")
 
         if not scored:
             return []
@@ -1030,7 +1027,8 @@ class TranslationMemoryV2:
                     continue
 
                 key_words = set(key_text.split())
-                if not phrase_words & key_words:
+                overlap_count = len(phrase_words & key_words)
+                if overlap_count < max(2, len(phrase_words) * 0.5):
                     continue
 
                 trans = row['translation'] or ''
@@ -1439,14 +1437,26 @@ class TranslationMemoryV2:
                     if ratio < 0.6:
                         continue
 
+                    from difflib import SequenceMatcher as _SM
+                    str_sim = _SM(None, term_lower, src_clean.lower(), autojunk=False).ratio()
+
+                    if str_sim < 0.3:
+                        continue
+
                     score = ratio
                     if src_clean.lower() == term_lower:
                         score += 2.0
                     if abs(len(src_words) - len(words)) <= 1:
                         score += 0.5
-                    if len(src_stems) > len(stems):
-                        extra_ratio = (len(src_stems) - len(stems)) / len(src_stems)
-                        score -= extra_ratio * 0.5
+
+                    extra_words = src_stems - stems
+                    if extra_words:
+                        extra_ratio = len(extra_words) / len(src_stems)
+                        score -= extra_ratio * 1.5
+
+                    if ratio < 1.0:
+                        score *= min(str_sim, ratio)
+
                     if origin == 'user':
                         score += 0.5
                     elif origin == 'ai_corrected':
@@ -1652,14 +1662,26 @@ class TranslationMemoryV2:
                 if ratio < 0.6:
                     continue
 
+                from difflib import SequenceMatcher as _SM
+                str_sim = _SM(None, term.lower(), src_clean.lower(), autojunk=False).ratio()
+
+                if str_sim < 0.3:
+                    continue
+
                 score = ratio
                 if src_clean.lower() == term.lower():
                     score += 2.0
                 if abs(len(src_words) - len(words)) <= 1:
                     score += 0.5
-                if len(src_stems) > len(stems) and ratio < 1.0:
-                    extra_ratio = (len(src_stems) - len(stems)) / len(src_stems)
-                    score -= extra_ratio * 0.5
+
+                extra_words = src_stems - stems
+                if extra_words:
+                    extra_ratio = len(extra_words) / len(src_stems)
+                    score -= extra_ratio * 1.5
+
+                if ratio < 1.0:
+                    score *= min(str_sim, ratio)
+
                 if origin == 'user':
                     score += 0.5
                 elif origin == 'ai_corrected':
@@ -1674,7 +1696,7 @@ class TranslationMemoryV2:
                 if score > best_score:
                     best_score = score
                     best = cleaned_trans
-                    print(f"[TM-TERM-SEARCH]   source match: '{src_clean[:60]}' → '{cleaned_trans[:40]}' (score={score:.2f})")
+                    print(f"[TM-TERM-SEARCH]   source match: '{src_clean[:60]}' → '{cleaned_trans[:40]}' (score={score:.2f}, str_sim={str_sim:.2f})")
             else:
                 pairs = self._extract_proper_noun_pairs(source, translation)
                 for en_phrase, ja_phrase in pairs:
