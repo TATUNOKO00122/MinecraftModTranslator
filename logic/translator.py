@@ -329,12 +329,20 @@ def validate_translation(original, translated, glossary=None, target_lang="ja_jp
     
     if glossary:
         original_lower = original.lower()
-        for en_term, ja_term in glossary.items():
-            en_lower = en_term.lower()
-            if re.search(r'\b' + re.escape(en_lower) + r'\b', original_lower):
-                if ja_term not in translated and en_lower not in translated.lower():
-                    issues.append(f"Glossary term missing: '{en_term}' → expected '{ja_term}'")
-                    score_penalties += 0.2
+        translated_lower = translated.lower()
+        if isinstance(glossary, dict):
+            for en_term, ja_term in glossary.items():
+                en_lower = en_term.lower()
+                if re.search(r'\b' + re.escape(en_lower) + r'\b', original_lower):
+                    if ja_term not in translated and en_lower not in translated_lower:
+                        issues.append(f"Glossary term missing: '{en_term}' → expected '{ja_term}'")
+                        score_penalties += 0.2
+        else:
+            for en_pattern, en_lower, ja_term in glossary:
+                if en_pattern.search(original_lower):
+                    if ja_term not in translated and en_lower not in translated_lower:
+                        issues.append(f"Glossary term missing: '{en_lower}' → expected '{ja_term}'")
+                        score_penalties += 0.2
     
     if target_lang.startswith("ja"):
         sentences = re.split(r'[。！？\n]+', translated)
@@ -431,59 +439,100 @@ class TranslatorThread(QThread):
             "X-Title": "Minecraft MOD Translator Desktop"
         }
 
-    def _extract_relevant_glossary(self, batch_text):
-        """バッチテキストから関連glossary語を抽出する（単語境界認識・複合語優先・ステミング対応）。"""
+    def _build_glossary_caches(self):
+        if self._glossary_regex_cache:
+            return
         if not self.glossary:
-            return {}
-        
-        batch_text_clean = batch_text.lower()
-        for pat in COMPILED_PATTERNS:
-            batch_text_clean = pat.sub(' ', batch_text_clean)
-        
-        batch_words = set(re.findall(r'[a-z]{3,}', batch_text_clean))
-        batch_stems = {self._stem_word(w): w for w in batch_words}
-        
-        print(f"[GLOSSARY-DBG] batch_words({len(batch_words)}): {sorted(batch_words)[:20]}")
-        
+            return
+        import time
+        t0 = time.perf_counter()
+        for en_term in self.glossary:
+            en_lower = en_term.lower()
+            en_words = en_lower.split()
+            if ' ' in en_lower:
+                pattern = r'\b' + r'\s+'.join(re.escape(w) for w in en_words) + r'\b'
+            else:
+                pattern = r'\b' + re.escape(en_lower) + r'\b'
+            self._glossary_regex_cache[en_lower] = re.compile(pattern)
         sorted_terms = sorted(
             self.glossary.items(),
             key=lambda x: -len(x[0].split())
         )
-        
+        self._sorted_glossary_terms = sorted_terms
+        print(f"[GLOSSARY-CACHE] Built regex cache for {len(self._glossary_regex_cache)} terms in {time.perf_counter()-t0:.3f}s")
+
+    def _get_precompiled_validate_glossary(self):
+        if self._glossary_validate_cache is not None:
+            return self._glossary_validate_cache
+        if not self.glossary:
+            self._glossary_validate_cache = self.glossary
+            return self._glossary_validate_cache
+        import time
+        t0 = time.perf_counter()
+        precompiled = []
+        for en_term, ja_term in self.glossary.items():
+            en_lower = en_term.lower()
+            pattern = re.compile(r'\b' + re.escape(en_lower) + r'\b')
+            precompiled.append((pattern, en_lower, ja_term))
+        self._glossary_validate_cache = precompiled
+        print(f"[GLOSSARY-VALIDATE-CACHE] Built for {len(precompiled)} terms in {time.perf_counter()-t0:.3f}s")
+        return precompiled
+
+    def _extract_relevant_glossary(self, batch_text):
+        """バッチテキストから関連glossary語を抽出する（単語境界認識・複合語優先・ステミング対応）。"""
+        if not self.glossary:
+            return {}
+
+        self._build_glossary_caches()
+        import time
+        t0 = time.perf_counter()
+
+        batch_text_clean = batch_text.lower()
+        for pat in COMPILED_PATTERNS:
+            batch_text_clean = pat.sub(' ', batch_text_clean)
+
+        batch_words = set(re.findall(r'[a-z]{3,}', batch_text_clean))
+        batch_stems = {}
+        for w in batch_words:
+            s = self._stem_word(w)
+            if s not in batch_stems:
+                batch_stems[s] = w
+
+        sorted_terms = getattr(self, '_sorted_glossary_terms', None)
+        if not sorted_terms:
+            sorted_terms = sorted(
+                self.glossary.items(),
+                key=lambda x: -len(x[0].split())
+            )
+
         scored = []
-        glossary_patterns_cache = {}
-        
+
         for en_term, ja_term in sorted_terms:
             en_lower = en_term.lower()
-            en_words = en_lower.split()
-            
-            if en_lower not in glossary_patterns_cache:
-                if ' ' in en_lower:
-                    pattern = r'\b' + r'\s+'.join(re.escape(w) for w in en_words) + r'\b'
-                else:
-                    pattern = r'\b' + re.escape(en_lower) + r'\b'
-                glossary_patterns_cache[en_lower] = re.compile(pattern)
-            
-            matches = glossary_patterns_cache[en_lower].findall(batch_text_clean)
+            compiled = self._glossary_regex_cache.get(en_lower)
+            if not compiled:
+                continue
+
+            matches = compiled.findall(batch_text_clean)
             if matches:
-                word_count = len(en_words)
+                word_count = len(en_lower.split())
                 score = len(matches) * 100 * word_count
                 scored.append((score, en_term, ja_term))
                 continue
-            
+
             term_words = en_lower.split()
             stem_match_count = 0
             for tw in term_words:
                 tw_stem = self._stem_word(tw)
                 if tw_stem in batch_stems or tw in batch_words:
                     stem_match_count += 1
-            
+
             if term_words and stem_match_count == len(term_words):
                 word_count = len(term_words)
                 scored.append((50 * word_count, en_term, ja_term))
-        
+
         scored.sort(key=lambda x: -x[0])
-        
+
         result = {}
         total_chars = 0
         for _, en_term, ja_term in scored:
@@ -494,7 +543,8 @@ class TranslatorThread(QThread):
             total_chars += len(line)
             if len(result) >= MAX_GLOSSARY_TERMS * 2:
                 break
-        
+
+        print(f"[GLOSSARY-EXTRACT] {len(result)} terms from {len(self.glossary)} in {time.perf_counter()-t0:.3f}s")
         return result
 
     _SUFFIXES_SORTED = (
@@ -506,9 +556,12 @@ class TranslatorThread(QThread):
         'ed', 'er', 'ly', 'en',
     )
 
-    @staticmethod
-    def _stem_word(word):
-        w = word.lower()
+    def _stem_word(self, word):
+        cache = self._stem_cache
+        w_lower = word.lower()
+        if w_lower in cache:
+            return cache[w_lower]
+        w = w_lower
         if w.endswith('ies') and len(w) > 4:
             w = w[:-3] + 'y'
         elif w.endswith(('sses', 'shes', 'ches', 'xes', 'zes')) and len(w) > 4:
@@ -517,7 +570,9 @@ class TranslatorThread(QThread):
             w = w[:-1]
         for suffix in TranslatorThread._SUFFIXES_SORTED:
             if w.endswith(suffix) and len(w) - len(suffix) >= 3:
+                cache[w_lower] = w[:-len(suffix)]
                 return w[:-len(suffix)]
+        cache[w_lower] = w
         return w
 
     def _build_system_prompt(self, lang_english):
@@ -634,6 +689,10 @@ class TranslatorThread(QThread):
         self.target_lang = target_lang
         self.source_type = source_type
         self._completed_translations = {}
+        self._glossary_regex_cache = {}
+        self._glossary_post_process_cache = None
+        self._stem_cache = {}
+        self._glossary_validate_cache = None
         self._token_usage = {
             'prompt_tokens': 0,
             'completion_tokens': 0,
@@ -930,6 +989,8 @@ class TranslatorThread(QThread):
         raise Exception("Max retries exceeded")
 
     def translate_batch(self, items, completed_context=None):
+        import time as _time
+        t_batch_start = _time.perf_counter()
         if not items:
             return {}, {}
         
@@ -1015,50 +1076,75 @@ class TranslatorThread(QThread):
                     f"{glossary_text}"
                 )
 
-        if self.memory:
-            try:
-                batch_texts = list(unique_items.values())
-                batch_keys = set(items.keys())
-                term_translations = self.memory.find_term_translations(
-                    batch_texts, cross_mod_data=self.cross_mod_data,
-                    exclude_keys=batch_keys,
-                    limit=30,
-                    cross_mod_index=self._cross_mod_index
-                )
-                print(f"[TM-TERM] find_term_translations returned: {len(term_translations)} results")
-                if term_translations:
-                    rules_text = "\n".join([f"  {en} → {ja}" for en, ja in term_translations])
-                    system_content += (
-                        f"\n\n=== MANDATORY TERM TRANSLATIONS ===\n"
-                        f"The following terms have established translations from other MODs/translations.\n"
-                        f"You MUST use these EXACT Japanese terms when they appear:\n"
-                        f"{rules_text}\n"
-                        f"CRITICAL RULES:\n"
-                        f"- These terms are ALREADY TRANSLATED. Use the EXACT Japanese text shown above.\n"
-                        f"- Do NOT re-translate, paraphrase, or invent new translations for these terms.\n"
-                        f"- Singular/plural variants must also use the same translation.\n"
-                    )
-            except Exception as e:
-                print(f"TM term lookup skipped: {e}")
+        term_translations = []
+        similar_examples = []
+        batch_texts = list(unique_items.values())
 
         if self.memory:
             try:
-                similar_examples = self.memory.find_similar(
-                    batch_texts, mod_name=self.mod_name, limit=5
-                )
-                if similar_examples:
-                    examples_text = "\n".join(
-                        [f'  "{s}" → "{t}"' for s, t in similar_examples]
+                import time as _time
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                t_parallel_start = _time.perf_counter()
+
+                batch_keys = set(items.keys())
+
+                def _run_term_lookup():
+                    return self.memory.find_term_translations(
+                        batch_texts, cross_mod_data=self.cross_mod_data,
+                        exclude_keys=batch_keys,
+                        limit=30,
+                        cross_mod_index=self._cross_mod_index
                     )
-                    system_content += (
-                        f"\n\n=== SIMILAR TRANSLATIONS FROM MEMORY ===\n"
-                        f"The following are previously translated similar texts. Prefer consistent terminology "
-                        f"when the source closely matches, but prioritize accuracy over consistency when they diverge.\n\n"
-                        f"{examples_text}\n"
+
+                def _run_similar_lookup():
+                    return self.memory.find_similar(
+                        batch_texts, mod_name=self.mod_name, limit=5
                     )
-                    print(f"[TM-SIMILAR] Added {len(similar_examples)} similar examples to prompt")
+
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    term_future = executor.submit(_run_term_lookup)
+                    similar_future = executor.submit(_run_similar_lookup)
+                    for future in as_completed([term_future, similar_future]):
+                        try:
+                            result = future.result()
+                            if future is term_future:
+                                term_translations = result or []
+                                print(f"[TM-TERM] returned: {len(term_translations)} results")
+                            else:
+                                similar_examples = result or []
+                                print(f"[TM-SIMILAR] returned: {len(similar_examples)} examples")
+                        except Exception as e:
+                            print(f"TM parallel lookup error: {e}")
+
+                print(f"[TM-PARALLEL] Both lookups completed in {_time.perf_counter()-t_parallel_start:.3f}s")
+
             except Exception as e:
-                print(f"TM similar lookup skipped: {e}")
+                print(f"TM parallel lookup skipped: {e}")
+
+        if term_translations:
+            rules_text = "\n".join([f"  {en} → {ja}" for en, ja in term_translations])
+            system_content += (
+                f"\n\n=== MANDATORY TERM TRANSLATIONS ===\n"
+                f"The following terms have established translations from other MODs/translations.\n"
+                f"You MUST use these EXACT Japanese terms when they appear:\n"
+                f"{rules_text}\n"
+                f"CRITICAL RULES:\n"
+                f"- These terms are ALREADY TRANSLATED. Use the EXACT Japanese text shown above.\n"
+                f"- Do NOT re-translate, paraphrase, or invent new translations for these terms.\n"
+                f"- Singular/plural variants must also use the same translation.\n"
+            )
+
+        if similar_examples:
+            examples_text = "\n".join(
+                [f'  "{s}" → "{t}"' for s, t in similar_examples]
+            )
+            system_content += (
+                f"\n\n=== SIMILAR TRANSLATIONS FROM MEMORY ===\n"
+                f"The following are previously translated similar texts. Prefer consistent terminology "
+                f"when the source closely matches, but prioritize accuracy over consistency when they diverge.\n\n"
+                f"{examples_text}\n"
+            )
+            print(f"[TM-SIMILAR] Added {len(similar_examples)} similar examples to prompt")
 
         if completed_context:
             context_examples = self._select_context_examples(
@@ -1090,6 +1176,7 @@ class TranslatorThread(QThread):
         print(f"[GLOSSARY] {len(self.glossary) if self.glossary else 0} terms")
         print(f"[COMPLETED_CONTEXT] {len(completed_context) if completed_context else 0} items")
         print(f"[SYSTEM PROMPT LENGTH] {len(system_content)} chars")
+        print(f"[TIMING] Prompt build: {_time.perf_counter()-t_batch_start:.3f}s")
         print(f"--- SYSTEM PROMPT (last 2000 chars) ---")
         print(system_content[-2000:])
         print(f"--- USER PROMPT (first 500 chars) ---")
@@ -1117,9 +1204,13 @@ class TranslatorThread(QThread):
         
         translated, token_info = self._call_llm(url, headers, data, len(protected_items), valid_keys=set(protected_items.keys()))
         if translated is None:
-            return final_results, validation_results
-        self._accumulate_tokens(token_info)
+            return {}, {}, {}
+        
+        t_llm_done = _time.perf_counter()
+        print(f"[TIMING] LLM call: {t_llm_done - (t_batch_start):.3f}s")
 
+        precompiled_glossary = self._get_precompiled_validate_glossary()
+        
         unique_results = {}
         corrupted_keys = {}
 
@@ -1135,7 +1226,7 @@ class TranslatorThread(QThread):
                     continue
 
                 is_valid, issues, quality = validate_translation(
-                    unique_items.get(key, ''), restored_text, self.glossary, self.target_lang
+                    unique_items.get(key, ''), restored_text, precompiled_glossary, self.target_lang
                 )
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
@@ -1148,7 +1239,7 @@ class TranslatorThread(QThread):
                 unique_results[key] = restored_text
             else:
                 is_valid, issues, quality = validate_translation(
-                    unique_items.get(key, ''), translated_text, self.glossary, self.target_lang
+                    unique_items.get(key, ''), translated_text, precompiled_glossary, self.target_lang
                 )
                 if not is_valid:
                     print(f"Translation warning for '{key}': {issues}")
@@ -1190,6 +1281,9 @@ class TranslatorThread(QThread):
                             validation_results[key] = validation_results[representative_key].copy()
 
         self._apply_glossary_post_process(final_results, unique_items)
+
+        print(f"[TIMING] Validation+PostProcess: {_time.perf_counter()-t_llm_done:.3f}s")
+        print(f"[TIMING] Total batch: {_time.perf_counter()-t_batch_start:.3f}s")
 
         return final_results, validation_results
 
@@ -1300,7 +1394,7 @@ class TranslatorThread(QThread):
                     still_corrupted[key] = remaining[key]
                     continue
 
-                is_valid, issues, quality = validate_translation(remaining[key], restored_text, self.glossary, self.target_lang)
+                is_valid, issues, quality = validate_translation(remaining[key], restored_text, self._get_precompiled_validate_glossary(), self.target_lang)
                 if not is_valid:
                     print(f"Retry warning for '{key}': {issues}")
                 resolved[key] = restored_text
@@ -1351,17 +1445,20 @@ class TranslatorThread(QThread):
         except Exception as e:
             print(f"Progressive save failed: {e}")
 
-    def _apply_glossary_post_process(self, final_results: dict, unique_items: dict):
+    def _build_glossary_post_process_cache(self):
+        if self._glossary_post_process_cache is not None:
+            return self._glossary_post_process_cache
         if not self.glossary:
-            return
-
+            self._glossary_post_process_cache = []
+            return self._glossary_post_process_cache
+        import time
+        t0 = time.perf_counter()
+        cache = []
         for en_term, ja_term in self.glossary.items():
             en_norm = en_term.strip()
             if not en_norm or len(en_norm) < 2:
                 continue
-
             en_pattern = re.compile(re.escape(en_norm), re.IGNORECASE)
-
             en_words = re.findall(r'[A-Za-z]+', en_norm)
             ja_compound_re = None
             if len(en_words) >= 2:
@@ -1372,11 +1469,23 @@ class TranslatorThread(QThread):
                         continue
                     katakana_parts.append(re.escape(w))
                 if katakana_parts:
-                    ja_compound_re = re.compile(r'[\u30A0-\u30FF\u3040-\u309F\u4E00-\u9FFF]*'
-                                                + r'[\s\u30FB\u30F7\u30FC]?'.join(katakana_parts)
-                                                + r'[\u30A0-\u30FF\u3040-\u309F\u4E00-\u9FFF]*',
-                                                re.IGNORECASE)
+                    ja_compound_re = re.compile(
+                        r'[\u30A0-\u30FF\u3040-\u309F\u4E00-\u9FFF]*'
+                        + r'[\s\u30FB\u30F7\u30FC]?'.join(katakana_parts)
+                        + r'[\u30A0-\u30FF\u3040-\u309F\u4E00-\u9FFF]*',
+                        re.IGNORECASE)
+            cache.append((en_pattern, ja_term, ja_compound_re))
+        self._glossary_post_process_cache = cache
+        print(f"[GLOSSARY-POST-CACHE] Built for {len(cache)} terms in {time.perf_counter()-t0:.3f}s")
+        return cache
 
+    def _apply_glossary_post_process(self, final_results: dict, unique_items: dict):
+        if not self.glossary:
+            return
+
+        cached = self._build_glossary_post_process_cache()
+
+        for en_pattern, ja_term, ja_compound_re in cached:
             for key, translated in final_results.items():
                 source = unique_items.get(key, self.items.get(key, ''))
                 if not en_pattern.search(source):
