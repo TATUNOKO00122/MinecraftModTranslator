@@ -21,8 +21,10 @@ from logic import datapack_handler
 from ui.editor_widget import EditorWidget
 from ui.settings_dialog import SettingsDialog
 from ui.glossary_dialog import GlossaryDialog
-from ui.term_extraction_dialog import TermExtractionDialog, FrequentTermDialog, FrequentTermTranslateThread
-from logic.term_extractor import AITermExtractorThread, AITermClassifierThread, extract_all_term_candidates, extract_frequent_terms_from_original
+from ui.term_extraction_dialog import TermExtractionDialog, FrequentTermDialog
+from logic.term_extractor import (AITermExtractorThread, AITermClassifierThread,
+                                   FrequentTermTranslateThread,
+                                   extract_all_term_candidates, extract_frequent_terms_from_original)
 from logic.resource_pack_handler import ResourcePackImportThread
 
 class NoScrollListWidget(QListWidget):
