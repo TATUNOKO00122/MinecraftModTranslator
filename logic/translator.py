@@ -69,6 +69,8 @@ VARIABLE_PATTERNS = [
 COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in VARIABLE_PATTERNS]
 
 MAX_GLOSSARY_TERMS = 60
+MAX_GLOSSARY_CHARS = 5000
+GLOSSARY_TERM_AVG_CHARS = 40
 
 NUMBER_PATTERN = re.compile(r'\b\d+(?:[.,]\d+)*\b')
 
@@ -430,7 +432,7 @@ class TranslatorThread(QThread):
         }
 
     def _extract_relevant_glossary(self, batch_text):
-        """バッチテキストから関連glossary語を抽出する（ステミング対応）。"""
+        """バッチテキストから関連glossary語を抽出する（単語境界認識・複合語優先・ステミング対応）。"""
         if not self.glossary:
             return {}
         
@@ -443,12 +445,30 @@ class TranslatorThread(QThread):
         
         print(f"[GLOSSARY-DBG] batch_words({len(batch_words)}): {sorted(batch_words)[:20]}")
         
+        sorted_terms = sorted(
+            self.glossary.items(),
+            key=lambda x: -len(x[0].split())
+        )
+        
         scored = []
-        for en_term, ja_term in self.glossary.items():
+        glossary_patterns_cache = {}
+        
+        for en_term, ja_term in sorted_terms:
             en_lower = en_term.lower()
+            en_words = en_lower.split()
             
-            if en_lower in batch_text_clean:
-                scored.append((100, en_term, ja_term))
+            if en_lower not in glossary_patterns_cache:
+                if ' ' in en_lower:
+                    pattern = r'\b' + r'\s+'.join(re.escape(w) for w in en_words) + r'\b'
+                else:
+                    pattern = r'\b' + re.escape(en_lower) + r'\b'
+                glossary_patterns_cache[en_lower] = re.compile(pattern)
+            
+            matches = glossary_patterns_cache[en_lower].findall(batch_text_clean)
+            if matches:
+                word_count = len(en_words)
+                score = len(matches) * 100 * word_count
+                scored.append((score, en_term, ja_term))
                 continue
             
             term_words = en_lower.split()
@@ -459,19 +479,31 @@ class TranslatorThread(QThread):
                     stem_match_count += 1
             
             if term_words and stem_match_count == len(term_words):
-                scored.append((50, en_term, ja_term))
+                word_count = len(term_words)
+                scored.append((50 * word_count, en_term, ja_term))
         
         scored.sort(key=lambda x: -x[0])
         
-        return {k: v for _, k, v in scored[:MAX_GLOSSARY_TERMS]}
+        result = {}
+        total_chars = 0
+        for _, en_term, ja_term in scored:
+            line = f"{en_term}: {ja_term}"
+            if total_chars + len(line) > MAX_GLOSSARY_CHARS:
+                break
+            result[en_term] = ja_term
+            total_chars += len(line)
+            if len(result) >= MAX_GLOSSARY_TERMS * 2:
+                break
+        
+        return result
 
     _SUFFIXES_SORTED = (
         'ication', 'ization', 'ational', 'iness',
         'ation', 'ition', 'ment', 'ness', 'ence', 'ance',
         'able', 'ible', 'ings',
         'ing', 'ful', 'ous', 'ive',
-        'ion', 'ity', 'ism', 'ist',
-        'ed', 'er', 'ly',
+        'ion', 'ity', 'ism', 'ist', 'ite', 'ium',
+        'ed', 'er', 'ly', 'en',
     )
 
     @staticmethod
@@ -590,6 +622,13 @@ class TranslatorThread(QThread):
         self.memory = memory
         self.mod_name = mod_name
         self.cross_mod_data = cross_mod_data or {}
+        self._cross_mod_index = None
+        if self.cross_mod_data and self.memory:
+            try:
+                self._cross_mod_index = self.memory.v2.build_cross_mod_index(self.cross_mod_data)
+                print(f"[CROSS-MOD] Index built: {len(self._cross_mod_index)} stems")
+            except Exception:
+                self._cross_mod_index = None
         self._batches_since_save = 0
         self.save_interval = 5
         self.target_lang = target_lang
@@ -960,7 +999,13 @@ class TranslatorThread(QThread):
             print(f"[GLOSSARY] {len(relevant_terms)} relevant terms from {len(self.glossary)} total")
             
             if relevant_terms:
-                glossary_text = "\n".join([f"- {k}: {v}" for k, v in relevant_terms.items()])
+                glossary_lines = []
+                for k, v in relevant_terms.items():
+                    if isinstance(v, list):
+                        glossary_lines.append(f"- {k}: {' / '.join(v)}")
+                    else:
+                        glossary_lines.append(f"- {k}: {v}")
+                glossary_text = "\n".join(glossary_lines)
                 system_content += (
                     f"\n\n=== GLOSSARY (MANDATORY) ===\n"
                     f"Use these EXACT translations for the following terms.\n"
@@ -975,7 +1020,8 @@ class TranslatorThread(QThread):
                 term_translations = self.memory.find_term_translations(
                     batch_texts, cross_mod_data=self.cross_mod_data,
                     exclude_keys=batch_keys,
-                    limit=30
+                    limit=30,
+                    cross_mod_index=self._cross_mod_index
                 )
                 print(f"[TM-TERM] find_term_translations returned: {len(term_translations)} results")
                 if term_translations:

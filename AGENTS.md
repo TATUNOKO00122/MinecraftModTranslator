@@ -99,7 +99,7 @@ ui/
 - Debug info: `print()` to stdout (no logging framework)
 
 ### Threading Model
-- All long-running operations use `QThread` subclasses (`TranslatorThread`, `ResourcePackImportThread`, `AITermExtractorThread`)
+- All long-running operations use `QThread` subclasses (`TranslatorThread`, `ModBatchLoadThread`, `ResourcePackImportThread`, `AITermExtractorThread`, `AITermClassifierThread`, `FrequentTermTranslateThread`)
 - Signals for thread communication: `progress(int, int)`, `finished(result)`, `error(str)`
 - Cancellation via `is_running` flag: `thread.stop()` sets `False`, thread checks periodically in loop
 - Parallel execution inside QThread: `ThreadPoolExecutor` with adaptive rate limiting (reduce workers on HTTP 429)
@@ -140,7 +140,7 @@ ui/
 - SQLite for translation memory: single `translations` table with upsert (`ON CONFLICT ... DO UPDATE`)
 - SQLite WAL mode: `PRAGMA journal_mode=WAL` for concurrent read/write safety
 - SQLite batch operations: `executemany()` with batch_size=1000, dynamic `IN` clauses with batch_size=500
-- SQLite lazy singleton connection: `check_same_thread=False`, `row_factory = sqlite3.Row`
+- SQLite per-thread connections: `threading.local()` with `check_same_thread=True`, `row_factory = sqlite3.Row`, `_write_lock = threading.Lock()`
 - Progressive save during translation: save to memory every 5 batches via `partial_save` signal
 - Session persistence: `SESSION_FILE` class attribute, save on `closeEvent`, restore on startup with user confirmation
 - File existence checks: `os.path.exists()` before all file operations, validate paths before restoration

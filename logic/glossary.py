@@ -1,6 +1,7 @@
 import json
 import os
 
+
 class Glossary:
     def __init__(self, filepath="glossary.json", default_glossary_path=None):
         self.filepath = filepath
@@ -12,7 +13,17 @@ class Glossary:
         if os.path.exists(self.filepath):
             try:
                 with open(self.filepath, 'r', encoding='utf-8') as f:
-                    self.terms = json.load(f)
+                    data = json.load(f)
+                if isinstance(data, dict) and data.get('version') == 2:
+                    raw_terms = data.get('terms', {})
+                else:
+                    raw_terms = data if isinstance(data, dict) else {}
+                self.terms = {}
+                for key, value in raw_terms.items():
+                    if isinstance(value, list):
+                        self.terms[key] = value
+                    else:
+                        self.terms[key] = value
                 return
             except Exception as e:
                 print(f"Failed to load glossary: {e}")

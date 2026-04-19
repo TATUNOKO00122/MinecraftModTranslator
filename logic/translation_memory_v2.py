@@ -13,6 +13,8 @@ import json
 import os
 import re
 import threading
+import time
+from difflib import SequenceMatcher
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
 
@@ -25,6 +27,7 @@ class TranslationMemoryV2:
         self.legacy_json_path = db_path.replace('.db', '.json')
         self._local = threading.local()
         self._write_lock = threading.Lock()
+        self._fts5_available = False
         self._init_db()
         self._migrate_from_json_if_needed()
     
@@ -67,9 +70,24 @@ class TranslationMemoryV2:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_mod_name ON translations(mod_name)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_origin ON translations(origin)')
 
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_key_mod ON translations(key, mod_name)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_key_mod_origin ON translations(key, mod_name, origin)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_origin_reviewed ON translations(origin, reviewed)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_mod_source ON translations(mod_name, source)')
+
+        cursor.execute('''CREATE TABLE IF NOT EXISTS translation_stems (
+            translation_id INTEGER PRIMARY KEY REFERENCES translations(id),
+            source_stems TEXT NOT NULL,
+            source_words TEXT NOT NULL,
+            word_count INTEGER DEFAULT 0
+        )''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_stems_words ON translation_stems(word_count)')
+
         conn.commit()
         self._migrate_add_origin()
         self._migrate_null_mod_name()
+        self._ensure_fts5()
+        self._ensure_fts5_index()
 
     def _migrate_to_composite_key(self, conn):
         """旧スキーマ(key単独UNIQUE)から(key, mod_name)複合UNIQUEへ移行。"""
@@ -165,7 +183,6 @@ class TranslationMemoryV2:
         count = cursor.fetchone()[0]
         
         if count > 0:
-            # Database already has data, skip migration
             return
         
         print(f"Migrating from {self.legacy_json_path} to SQLite...")
@@ -173,7 +190,6 @@ class TranslationMemoryV2:
             with open(self.legacy_json_path, 'r', encoding='utf-8') as f:
                 legacy_data = json.load(f)
             
-            # Batch insert for performance
             batch_size = 1000
             items = list(legacy_data.items())
             for i in range(0, len(items), batch_size):
@@ -187,7 +203,6 @@ class TranslationMemoryV2:
             
             print(f"Migration complete: {len(legacy_data)} entries migrated.")
             
-            # Rename old JSON file as backup
             backup_path = self.legacy_json_path + '.migrated'
             if not os.path.exists(backup_path):
                 os.rename(self.legacy_json_path, backup_path)
@@ -198,6 +213,158 @@ class TranslationMemoryV2:
     
     def _hash_text(self, text: str) -> str:
         return ""
+
+    def _ensure_fts5(self):
+        try:
+            conn = self._get_connection()
+            conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_check USING fts5(x)")
+            conn.execute("DROP TABLE IF EXISTS _fts5_check")
+            self._fts5_available = True
+            print("[TM] FTS5 is available")
+        except sqlite3.OperationalError:
+            self._fts5_available = False
+            print("[TM] FTS5 unavailable, falling back to LIKE queries")
+
+    def _ensure_fts5_index(self):
+        if not self._fts5_available:
+            return
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        exists = cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='translations_fts'"
+        ).fetchone()
+        if exists:
+            return
+
+        count = cursor.execute("SELECT COUNT(*) FROM translations").fetchone()[0]
+
+        cursor.execute('''
+            CREATE VIRTUAL TABLE IF NOT EXISTS translations_fts USING fts5(
+                source,
+                content='translations',
+                content_rowid='id'
+            )
+        ''')
+
+        if count > 0:
+            t0 = time.time() if hasattr(time, 'time') else 0
+            cursor.execute('''
+                INSERT INTO translations_fts(rowid, source)
+                SELECT id, source FROM translations WHERE source != ''
+            ''')
+            conn.commit()
+            elapsed = (time.time() - t0) if t0 else 0
+            print(f"[TM] FTS5 index built ({count} rows, {elapsed:.1f}s)")
+
+        cursor.execute('''
+            CREATE TRIGGER IF NOT EXISTS translations_fts_ai AFTER INSERT ON translations BEGIN
+                INSERT INTO translations_fts(rowid, source)
+                VALUES (new.id, new.source);
+            END
+        ''')
+        cursor.execute('''
+            CREATE TRIGGER IF NOT EXISTS translations_fts_ad AFTER DELETE ON translations BEGIN
+                INSERT INTO translations_fts(translations_fts, rowid, source)
+                VALUES ('delete', old.id, old.source);
+            END
+        ''')
+        cursor.execute('''
+            CREATE TRIGGER IF NOT EXISTS translations_fts_au AFTER UPDATE ON translations BEGIN
+                INSERT INTO translations_fts(translations_fts, rowid, source)
+                VALUES ('delete', old.id, old.source);
+                INSERT INTO translations_fts(rowid, source)
+                VALUES (new.id, new.source);
+            END
+        ''')
+        conn.commit()
+        print("[TM] FTS5 triggers created")
+
+        self._ensure_stems_cache()
+
+    def _ensure_stems_cache(self):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        missing = cursor.execute('''
+            SELECT t.id, t.source FROM translations t
+            LEFT JOIN translation_stems ts ON t.id = ts.translation_id
+            WHERE ts.translation_id IS NULL AND t.source != ''
+        ''').fetchall()
+
+        if not missing:
+            return
+
+        batch_rows = []
+        for row in missing:
+            tid = row['id']
+            source = row['source']
+            words_list = re.findall(r'[a-zA-Z]{3,}', source.lower())
+            if not words_list:
+                continue
+            words_set = set(words_list) - self._STOP_WORDS
+            stems_list = [self._stem(w) for w in words_set]
+            batch_rows.append((tid, ' '.join(stems_list), ' '.join(words_set), len(words_set)))
+
+        if batch_rows:
+            cursor.executemany(
+                'INSERT OR IGNORE INTO translation_stems (translation_id, source_stems, source_words, word_count) '
+                'VALUES (?, ?, ?, ?)',
+                batch_rows
+            )
+            conn.commit()
+            print(f"[TM] Stems cache built: {len(batch_rows)} entries")
+
+    def _fts_search(self, words, mod_name=None, limit=500):
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        if self._fts5_available:
+            safe_words = [w for w in words if w and not w.upper() in ('AND', 'OR', 'NOT', 'NEAR')]
+            if not safe_words:
+                return []
+            match_expr = ' OR '.join(f'"{w}"' for w in safe_words)
+            try:
+                if mod_name:
+                    cursor.execute(
+                        'SELECT t.source, t.translation, t.origin '
+                        'FROM translations_fts f '
+                        'JOIN translations t ON t.id = f.rowid '
+                        'WHERE f.source MATCH ? AND t.source != "" AND t.mod_name = ? '
+                        'LIMIT ?',
+                        (match_expr, mod_name, limit)
+                    )
+                else:
+                    cursor.execute(
+                        'SELECT t.source, t.translation, t.origin '
+                        'FROM translations_fts f '
+                        'JOIN translations t ON t.id = f.rowid '
+                        'WHERE f.source MATCH ? AND t.source != "" '
+                        'LIMIT ?',
+                        (match_expr, limit)
+                    )
+                return cursor.fetchall()
+            except sqlite3.OperationalError:
+                print("[TM] FTS5 query failed, falling back to LIKE")
+
+        like_clauses = ' OR '.join(['source LIKE ?' for _ in words])
+        like_params = [f'%{w}%' for w in words]
+        if mod_name:
+            cursor.execute(
+                f'SELECT source, translation, origin FROM translations '
+                f'WHERE mod_name = ? AND source != "" '
+                f'AND ({like_clauses}) LIMIT ?',
+                [mod_name] + like_params + [limit]
+            )
+        else:
+            cursor.execute(
+                f'SELECT source, translation, origin FROM translations '
+                f'WHERE source != "" '
+                f'AND ({like_clauses}) LIMIT ?',
+                like_params + [limit]
+            )
+        return cursor.fetchall()
     
     def _detect_category(self, key: str) -> str:
         """Detect category from translation key."""
@@ -545,8 +712,8 @@ class TranslationMemoryV2:
         'ation', 'ition', 'ment', 'ness', 'ence', 'ance',
         'able', 'ible', 'ings',
         'ing', 'ful', 'ous', 'ive',
-        'ion', 'ity', 'ism', 'ist',
-        'ed', 'er', 'ly',
+        'ion', 'ity', 'ism', 'ist', 'ite', 'ium',
+        'ed', 'er', 'ly', 'en',
     )
 
     @staticmethod
@@ -612,31 +779,7 @@ class TranslationMemoryV2:
         search_words = list(batch_words | batch_stems)
         top_words = sorted(search_words, key=len, reverse=True)[:20]
 
-        conn = self._get_connection()
-        cursor = conn.cursor()
-
-        like_clauses = ' OR '.join(['source LIKE ?' for _ in top_words])
-        like_params = [f'%{w}%' for w in top_words]
-
-        if mod_name:
-            query = (
-                f'SELECT source, translation, origin FROM translations '
-                f'WHERE mod_name = ? AND source != "" '
-                f'AND ({like_clauses}) '
-                f'LIMIT 500'
-            )
-            params = [mod_name] + like_params
-        else:
-            query = (
-                f'SELECT source, translation, origin FROM translations '
-                f'WHERE source != "" '
-                f'AND ({like_clauses}) '
-                f'LIMIT 500'
-            )
-            params = like_params
-
-        cursor.execute(query, params)
-        candidates = cursor.fetchall()
+        candidates = self._fts_search(top_words, mod_name=mod_name, limit=500)
 
         print(f"[TM-SIMILAR] stems={len(batch_stems)}, min_stem={min_stem_count}, candidates={len(candidates)}")
 
@@ -678,9 +821,21 @@ class TranslationMemoryV2:
             jaccard = self._compute_jaccard(batch_stems, source_stems)
 
             if jaccard >= self._SIMILARITY_THRESHOLD:
+                best_str_sim = 0.0
+                source_clean_text = source_clean.strip()
+                for bt in batch_texts:
+                    if not bt or not isinstance(bt, str):
+                        continue
+                    bt_clean = re.sub(r'&[0-9a-fk-or]', '', bt).strip()
+                    sim = SequenceMatcher(None, bt_clean, source_clean_text).ratio()
+                    if sim > best_str_sim:
+                        best_str_sim = sim
+
+                hybrid = 0.4 * jaccard + 0.6 * best_str_sim
+                score = hybrid * origin_w
+
                 if len(source) <= self._MAX_EXAMPLE_LENGTH and len(translation) <= self._MAX_EXAMPLE_LENGTH:
-                    score = jaccard * origin_w
-                    scored.append((score, jaccard, source, translation))
+                    scored.append((score, hybrid, source, translation))
                 else:
                     long_matched.append((origin_w, source, translation))
             else:
@@ -693,7 +848,7 @@ class TranslationMemoryV2:
             for en_phrase, ja_phrase in pairs:
                 scored.append((1.5 * origin_w, 1.0, en_phrase, ja_phrase))
 
-        empty_source_results = self._search_empty_source_pairs(cursor, batch_texts)
+        empty_source_results = self._search_empty_source_pairs(self._get_connection().cursor(), batch_texts)
         scored.extend(empty_source_results)
 
         print(f"[TM-SIMILAR] scored={len(scored)}, long_matched={len(long_matched)}, empty_source={len(empty_source_results)}")
@@ -768,32 +923,84 @@ class TranslationMemoryV2:
         return scored
 
     def _extract_proper_noun_pairs(self, source: str, translation: str) -> List[Tuple[str, str]]:
+        pairs = []
+
         src_segments = re.findall(r'&[0-9a-fk-or]([^&]+?)(?:&r|$)', source)
         trans_segments = re.findall(r'&[0-9a-fk-or]([^&]+?)(?:&r|$)', translation)
 
-        if not src_segments or not trans_segments:
-            cleaned_src = re.sub(r'&[0-9a-fk-or]', '', source)
-            cleaned_trans = re.sub(r'&[0-9a-fk-or]', '', translation)
-            src_segments = [cleaned_src]
-            trans_segments = [cleaned_trans]
+        if src_segments and trans_segments:
+            pair_count = min(len(src_segments), len(trans_segments))
+            for i in range(pair_count):
+                s = src_segments[i].strip()
+                t = trans_segments[i].strip()
+                s = re.sub(r'^[\d\s]+', '', s).strip()
+                s = re.sub(r'[\d\s]+$', '', s).strip()
+                t = re.sub(r'^[\d\s]+', '', t).strip()
+                t = re.sub(r'[\d\s]+$', '', t).strip()
+                if not s or not t:
+                    continue
+                has_proper = bool(re.search(r'[A-Z][a-zA-Z]+', s))
+                has_cjk = bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', t))
+                if has_proper and has_cjk:
+                    pairs.append((s, t))
+            if pairs:
+                return pairs
 
-        pairs = []
-        pair_count = min(len(src_segments), len(trans_segments))
-        for i in range(pair_count):
-            s = src_segments[i].strip()
-            t = trans_segments[i].strip()
-            s = re.sub(r'^[\d\s]+', '', s).strip()
-            s = re.sub(r'[\d\s]+$', '', s).strip()
-            t = re.sub(r'^[\d\s]+', '', t).strip()
-            t = re.sub(r'[\d\s]+$', '', t).strip()
-            if not s or not t:
+        cleaned_src = re.sub(r'&[0-9a-fk-or]', '', source)
+        cleaned_trans = re.sub(r'&[0-9a-fk-or]', '', translation)
+
+        bracket_src = re.findall(r'[(\uff08]([^)(\uff08\uff09]+)[)\uff09]', cleaned_src)
+        bracket_trans = re.findall(r'[(\uff08]([^)(\uff08\uff09]+)[)\uff09]', cleaned_trans)
+        if bracket_src and bracket_trans:
+            bc = min(len(bracket_src), len(bracket_trans))
+            for i in range(bc):
+                s = bracket_src[i].strip()
+                t = bracket_trans[i].strip()
+                has_proper = bool(re.search(r'[A-Z][a-zA-Z]+', s))
+                has_cjk = bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', t))
+                if has_proper and has_cjk:
+                    pairs.append((s, t))
+
+        cap_phrases = re.findall(r'[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+', cleaned_src)
+        cjk_blocks = re.findall(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u30FC]{2,}', cleaned_trans)
+        if cap_phrases and cjk_blocks:
+            for phrase in cap_phrases[:5]:
+                if not any(phrase == p[0] for p in pairs):
+                    for block in cjk_blocks[:5]:
+                        if 2 <= len(block) <= 20:
+                            pairs.append((phrase, block))
+                            break
+
+        if not pairs:
+            src_words = re.findall(r'[A-Z][a-zA-Z]+', cleaned_src)
+            if src_words:
+                has_cjk = bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', cleaned_trans))
+                if has_cjk:
+                    pairs.append((cleaned_src.strip(), cleaned_trans.strip()))
+
+        return list(set(pairs))
+
+    def build_cross_mod_index(self, cross_mod_data):
+        if not cross_mod_data:
+            return {}
+        index = {}
+        for key, entry in cross_mod_data.items():
+            if isinstance(entry, str):
+                source = ""
+            elif isinstance(entry, dict):
+                source = entry.get("original", "")
+            else:
                 continue
-            has_proper = bool(re.search(r'[A-Z][a-zA-Z]+', s))
-            has_cjk = bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', t))
-            if has_proper and has_cjk:
-                pairs.append((s, t))
-
-        return pairs
+            if not source or not isinstance(source, str):
+                continue
+            words = set(re.findall(r'[a-zA-Z]{3,}', source.lower()))
+            for word in words:
+                stem = self._stem(word)
+                for term in (word, stem):
+                    if term not in index:
+                        index[term] = []
+                    index[term].append((key, entry))
+        return index
 
     def _extract_noun_pair_from_text(self, source: str, translation: str,
                                       term: str, stems: set) -> Optional[str]:
@@ -822,7 +1029,8 @@ class TranslationMemoryV2:
     def find_term_translations(self, batch_texts: List[str],
                                cross_mod_data: dict = None,
                                exclude_keys: set = None,
-                               limit: int = 30) -> List[Tuple[str, str]]:
+                               limit: int = 30,
+                               cross_mod_index: dict = None) -> List[Tuple[str, str]]:
         """
         バッチテキストから固有名詞（アイテム名・ブロック名等）を抽出し、
         TM全体と他MODデータから訳語を検索する。
@@ -860,7 +1068,10 @@ class TranslationMemoryV2:
 
             ja = self._search_term_in_tm(term, stems, exclude_keys)
             if not ja and cross_mod_data:
-                ja = self._search_term_in_cross_mod(term, stems, cross_mod_data, exclude_keys)
+                if cross_mod_index:
+                    ja = self._search_term_in_cross_mod_indexed(term, stems, cross_mod_index, cross_mod_data, exclude_keys)
+                else:
+                    ja = self._search_term_in_cross_mod(term, stems, cross_mod_data, exclude_keys)
 
             if ja:
                 seen.add(term.lower())
@@ -1047,6 +1258,9 @@ class TranslationMemoryV2:
                         score += 2.0
                     if abs(len(src_words) - len(words)) <= 1:
                         score += 0.5
+                    if len(src_stems) > len(stems) and ratio < 1.0:
+                        extra_ratio = (len(src_stems) - len(stems)) / len(src_stems)
+                        score -= extra_ratio * 0.5
                     if origin == 'user':
                         score += 0.5
                     elif origin == 'ai_corrected':
@@ -1100,7 +1314,7 @@ class TranslationMemoryV2:
                         best = cleaned_trans
                         print(f"[TM-TERM-SEARCH]   key match: '{row_key}' → '{cleaned_trans[:40]}' (ratio={ratio:.2f})")
 
-        if best and best_score >= 0.7:
+        if best and best_score >= 0.8:
             print(f"[TM-TERM-SEARCH] result: '{term}' → '{best}' (best_score={best_score:.2f})")
             return best
 
@@ -1156,6 +1370,91 @@ class TranslationMemoryV2:
 
             score = 0.0
 
+            if ratio >= 0.8:
+                score = ratio
+                if orig_clean.strip().lower() == term_lower:
+                    score += 2.0
+                if abs(len(orig_words) - len(words)) <= 1:
+                    score += 0.5
+                if len(translation) <= 30:
+                    score += 0.3
+                elif len(translation) <= 50:
+                    score += 0.1
+                else:
+                    score -= 0.5
+
+            if score <= 0 and term_lower in orig_lower:
+                score = 0.5
+
+            if score <= 0:
+                key_clean = key.replace('_', ' ').replace('.', ' ').lower()
+                key_words = set(re.findall(r'[a-zA-Z]{2,}', key_clean))
+                key_stems = {self._stem(w) for w in key_words}
+                key_overlap = len(stems & key_stems)
+                key_ratio = key_overlap / len(stems) if stems else 0
+                if key_ratio >= 0.8:
+                    score = key_ratio * 0.5
+                elif term_lower in key.lower().replace('_', ' '):
+                    score = 0.3
+
+            if score > best_score:
+                best_score = score
+                best = re.sub(r'&[0-9a-fk-or]', '', translation).strip()
+
+        if best and best_score >= 0.8:
+            return best
+
+        return None
+
+    def _search_term_in_cross_mod_indexed(self, term: str, stems: set,
+                                           cross_mod_index: dict,
+                                           cross_mod_data: dict,
+                                           exclude_keys: set = None) -> Optional[str]:
+        exclude_keys = exclude_keys or set()
+        candidates = {}
+
+        for stem in stems:
+            for entry_tuple in cross_mod_index.get(stem, []):
+                key = entry_tuple[0]
+                if key in exclude_keys:
+                    continue
+                if entry_tuple not in candidates:
+                    candidates[entry_tuple] = 0
+                candidates[entry_tuple] += 1
+
+        scored = sorted(candidates.items(), key=lambda x: -x[1])
+
+        term_lower = term.lower()
+        words = term.split()
+        best = None
+        best_score = 0.0
+
+        for (key, entry), _ in scored[:50]:
+            if isinstance(entry, str):
+                original = ""
+                translation = entry
+            elif isinstance(entry, dict):
+                original = entry.get("original", "")
+                translation = entry.get("translation", "")
+            else:
+                continue
+
+            if not translation or not isinstance(translation, str):
+                continue
+
+            has_cjk = bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', translation))
+            if not has_cjk:
+                continue
+
+            orig_clean = re.sub(r'&[0-9a-fk-or]', '', original if isinstance(original, str) else "").strip()
+            orig_lower = orig_clean.lower()
+            orig_words = set(re.findall(r'[a-zA-Z]{2,}', orig_lower))
+            orig_stems = {self._stem(w) for w in orig_words}
+
+            overlap = len(stems & orig_stems)
+            ratio = overlap / len(stems) if stems else 0
+
+            score = 0.0
             if ratio >= 0.8:
                 score = ratio
                 if orig_clean.strip().lower() == term_lower:
