@@ -1795,7 +1795,8 @@ class MainWindow(QMainWindow):
             memory=self.memory, mod_name=mod_name,
             target_lang=settings.get("target_lang", "ja_jp"),
             source_type=source_type,
-            cross_mod_data=cross_mod_data
+            cross_mod_data=cross_mod_data,
+            temperature=settings.get("temperature", 0.3)
         )
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self.on_translate_finished)
@@ -2197,7 +2198,8 @@ class MainWindow(QMainWindow):
             memory=self.memory, mod_name=mod_name,
             target_lang=settings.get("target_lang", "ja_jp"),
             source_type=entry['source_type'],
-            cross_mod_data=cross_mod_data
+            cross_mod_data=cross_mod_data,
+            temperature=settings.get("temperature", 0.3)
         )
         self.translator_thread.progress.connect(self.on_translation_progress)
         self.translator_thread.finished.connect(self._on_batch_mod_finished)

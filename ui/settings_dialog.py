@@ -3,7 +3,8 @@ import time
 import requests
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QLineEdit, 
                                 QComboBox, QPushButton, QHBoxLayout, QFileDialog,
-                                QSpinBox, QGroupBox, QFormLayout, QMessageBox)
+                                QSpinBox, QGroupBox, QFormLayout, QMessageBox,
+                                QSlider)
 from PySide6.QtCore import QSettings, Qt
 
 try:
@@ -147,6 +148,26 @@ class SettingsDialog(QDialog):
         help_label = QLabel("※ 無料モデル: 1〜2推奨 / 有料モデル: 3〜5推奨")
         help_label.setObjectName("HintLabel")
         perf_layout.addRow("", help_label)
+        
+        temp_row = QHBoxLayout()
+        self.temp_slider = QSlider(Qt.Horizontal)
+        self.temp_slider.setRange(0, 20)
+        saved_temp = float(self.settings.value("temperature", 0.3))
+        self.temp_slider.setValue(int(saved_temp * 10))
+        self.temp_slider.setTickPosition(QSlider.TicksBelow)
+        self.temp_slider.setTickInterval(5)
+        temp_row.addWidget(self.temp_slider)
+        self.temp_label = QLabel(f"{saved_temp:.1f}")
+        self.temp_label.setFixedWidth(30)
+        temp_row.addWidget(self.temp_label)
+        self.temp_slider.valueChanged.connect(
+            lambda v: self.temp_label.setText(f"{v / 10:.1f}")
+        )
+        perf_layout.addRow("Temperature:", temp_row)
+        
+        temp_hint = QLabel("低い(0.1〜0.3): 堅実・一貫 / 高い(0.7〜1.0): 自然・多様")
+        temp_hint.setObjectName("HintLabel")
+        perf_layout.addRow("", temp_hint)
         
         perf_group.setLayout(perf_layout)
         layout.addWidget(perf_group)
@@ -347,6 +368,7 @@ class SettingsDialog(QDialog):
         self.settings.setValue("parallel_count", self.parallel_spin.value())
         self.settings.setValue("pack_format", self.mc_version_combo.currentData())
         self.settings.setValue("target_lang", self.target_lang_combo.currentData())
+        self.settings.setValue("temperature", self.temp_slider.value() / 10.0)
         self.accept()
 
     def get_settings(self):
@@ -359,4 +381,5 @@ class SettingsDialog(QDialog):
             "parallel_count": self.parallel_spin.value(),
             "pack_format": self.mc_version_combo.currentData(),
             "target_lang": self.target_lang_combo.currentData(),
+            "temperature": self.temp_slider.value() / 10.0,
         }

@@ -575,6 +575,126 @@ class TranslatorThread(QThread):
         cache[w_lower] = w
         return w
 
+    _SIMILAR_STOP_WORDS = frozenset({
+        'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'was',
+        'one', 'our', 'had', 'his', 'how', 'its', 'let', 'may', 'new', 'now',
+        'old', 'see', 'way', 'who', 'did', 'get', 'him', 'she', 'use', 'out',
+        'any', 'from', 'them', 'some', 'than', 'been', 'have', 'will', 'into',
+        'this', 'that', 'with', 'they', 'what', 'about', 'which', 'when', 'make',
+        'like', 'just', 'over', 'such', 'take', 'each', 'very', 'your', 'also',
+    })
+
+    _MAX_SIMILAR_EXAMPLE_LENGTH = 120
+
+    def _find_similar_from_loaded_mods(self, batch_texts, limit=5):
+        from difflib import SequenceMatcher
+        import time as _time
+        t0 = _time.perf_counter()
+
+        all_pairs = []
+        for key, data in self.cross_mod_data.items():
+            orig = data.get("original", "")
+            trans = data.get("translation", "")
+            if orig and trans:
+                all_pairs.append((orig, trans))
+        for key, trans in self._completed_translations.items():
+            orig = self.items.get(key, "")
+            if orig and trans:
+                all_pairs.append((orig, trans))
+
+        if not all_pairs:
+            return []
+
+        batch_words = set()
+        cleaned_batch_map = {}
+        for text in batch_texts:
+            if not text or not isinstance(text, str):
+                continue
+            cleaned = re.sub(r'&[0-9a-fk-or]', '', text)
+            batch_words.update(w for w in re.findall(r'[a-zA-Z]{3,}', cleaned.lower()))
+            cleaned_batch_map[text] = cleaned.strip()
+        batch_words -= self._SIMILAR_STOP_WORDS
+
+        if not batch_words:
+            return []
+
+        batch_stems = {self._stem_word(w) for w in batch_words}
+
+        if len(batch_stems) <= 3:
+            min_stem_count = 1
+        elif len(batch_stems) <= 8:
+            min_stem_count = 2
+        else:
+            min_stem_count = max(2, len(batch_stems) // 4)
+
+        batch_texts_set = set(t for t in batch_texts if isinstance(t, str))
+
+        batch_text_stems = []
+        for text, cleaned in cleaned_batch_map.items():
+            if not cleaned:
+                continue
+            words = set(re.findall(r'[a-zA-Z]{3,}', cleaned.lower())) - self._SIMILAR_STOP_WORDS
+            stems = {self._stem_word(w) for w in words}
+            batch_text_stems.append((text, cleaned, stems))
+
+        scored = []
+        seen_sources = set()
+        for source, translation in all_pairs:
+            if source in batch_texts_set or source in seen_sources:
+                continue
+            if len(source) > self._MAX_SIMILAR_EXAMPLE_LENGTH or len(translation) > self._MAX_SIMILAR_EXAMPLE_LENGTH:
+                continue
+
+            seen_sources.add(source)
+            source_clean = re.sub(r'&[0-9a-fk-or]', '', source)
+            source_words = set(re.findall(r'[a-zA-Z]{3,}', source_clean.lower())) - self._SIMILAR_STOP_WORDS
+            source_stems = {self._stem_word(w) for w in source_words}
+
+            if source_stems and source_stems.issubset(batch_stems) and len(source_words) <= 5:
+                scored.append((1.5, source, translation))
+                continue
+
+            common_count = len(batch_stems & source_stems)
+            if common_count < min_stem_count:
+                continue
+
+            intersection = len(batch_stems & source_stems)
+            union = len(batch_stems | source_stems)
+            jaccard = intersection / union if union > 0 else 0.0
+
+            if jaccard < 0.4:
+                continue
+
+            best_str_sim = 0.0
+            source_clean_text = source_clean.strip()
+            source_len = len(source_clean_text)
+            for bt, bt_clean, bt_stems in batch_text_stems:
+                bt_len = len(bt_clean)
+                if bt_len == 0:
+                    continue
+                len_ratio = source_len / bt_len if bt_len > source_len else bt_len / source_len
+                if len_ratio < 0.4:
+                    continue
+                overlap = len(bt_stems & source_stems)
+                if overlap > 0:
+                    sim = SequenceMatcher(None, bt_clean, source_clean_text, autojunk=False).ratio()
+                    if sim > best_str_sim:
+                        best_str_sim = sim
+
+            hybrid = 0.4 * jaccard + 0.6 * best_str_sim
+            scored.append((hybrid, source, translation))
+
+        if not scored:
+            return []
+
+        scored.sort(key=lambda x: -x[0])
+        results = []
+        for _, source, translation in scored[:limit]:
+            results.append((source, translation))
+
+        print(f"[MOD-SIMILAR] pairs={len(all_pairs)}, scored={len(scored)}, returned={len(results)}, time={_time.perf_counter()-t0:.3f}s")
+        return results
+
     def _build_system_prompt(self, lang_english):
         base = (
             f"Expert EN→{lang_english} translator for Minecraft mods/RPG games.\n"
@@ -620,6 +740,13 @@ class TranslatorThread(QThread):
             f"   'Has:' → '以下の特徴がある:' (NOT '持っている:'), 'Properties:' → '特性:'\n"
             f"   'integration(s) between X and Y' → 'XとYの連携(機能)' (NOT '統合')\n"
             f"   'enhance X with Y' → 'YでXを強化する' (NOT 'Yを強化する' — subject-object swap)\n"
+            f"9. NEVER use '〜としてのX' pattern — it is almost always unnatural Japanese.\n"
+            f"   Instead, use compound nouns (複合名詞) or concise phrases:\n"
+            f"   BAD: 'Extra Damage as Physical' → '物理としての追加ダメージ'\n"
+            f"   GOOD:→ '物理追加ダメージ'\n"
+            f"   BAD: 'Speed as Bonus' → 'ボーナスとしての速度'\n"
+            f"   GOOD:→ 'ボーナス速度'\n"
+            f"   Do NOT expand into explanatory sentences. Keep the same information density as the source.\n"
         )
 
         if self.source_type == "ftbquest":
@@ -647,6 +774,15 @@ class TranslatorThread(QThread):
                 "'半径3ブロック以内の敵に火属性ダメージ150%を与える'\n"
                 "- Stat names: 2-4字。例: 「攻撃力」「魔力」「防御」\n"
                 "- Class/school names: 簡潔に。例: 「火術師」「バーサーカー」\n"
+                "- 'A as Extra B' パターン — stat conversion表記:\n"
+                "  These are stat names/modifiers, NOT explanatory sentences.\n"
+                "  Translate as concise compound nouns, same length as source.\n"
+                "  BAD: 'Physical as Extra Damage' → '追加ダメージとしての物理' (〜としての is banned)\n"
+                "  BAD: 'Physical as Extra Damage' → '物理ダメージを追加ダメージとして扱う' (too long, explanatory)\n"
+                "  GOOD:→ '物理→追加ダメージ' or '物理の追加ダメージ変換'\n"
+                "  BAD: 'Physical as Extra Physical Damage' → '追加物理ダメージとしての物理'\n"
+                "  GOOD:→ '物理→追加物理ダメージ'\n"
+                "  Rule: Keep concise, no verb expansion, no '〜としての'. Use arrow(→) or compound noun.\n"
             )
         else:
             base += (
@@ -662,13 +798,14 @@ class TranslatorThread(QThread):
 
     def __init__(self, items, api_key, model, glossary=None, parallel_count=3, 
                  memory=None, mod_name=None, target_lang="ja_jp", source_type=None,
-                 cross_mod_data=None):
+                 cross_mod_data=None, temperature=0.3):
         super().__init__()
         self.items = items
         self._api_key = api_key
         self.model = model
         self.glossary = glossary or {}
         self.is_running = True
+        self.temperature = max(0.0, min(2.0, float(temperature)))
         self._partial_results = {}
         self.target_batch_chars = 4000
         self.min_batch_size = 5
@@ -1099,30 +1236,20 @@ class TranslatorThread(QThread):
                         cross_mod_index=self._cross_mod_index
                     )
 
-                def _run_similar_lookup():
-                    return self.memory.find_similar(
-                        batch_texts, mod_name=self.mod_name, limit=5
-                    )
-
-                with ThreadPoolExecutor(max_workers=2) as executor:
+                with ThreadPoolExecutor(max_workers=1) as executor:
                     term_future = executor.submit(_run_term_lookup)
-                    similar_future = executor.submit(_run_similar_lookup)
-                    for future in as_completed([term_future, similar_future]):
-                        try:
-                            result = future.result()
-                            if future is term_future:
-                                term_translations = result or []
-                                print(f"[TM-TERM] returned: {len(term_translations)} results")
-                            else:
-                                similar_examples = result or []
-                                print(f"[TM-SIMILAR] returned: {len(similar_examples)} examples")
-                        except Exception as e:
-                            print(f"TM parallel lookup error: {e}")
+                    try:
+                        term_translations = term_future.result() or []
+                        print(f"[TM-TERM] returned: {len(term_translations)} results")
+                    except Exception as e:
+                        print(f"TM term lookup error: {e}")
+
+                similar_examples = self._find_similar_from_loaded_mods(batch_texts, limit=5)
 
                 print(f"[TM-PARALLEL] Both lookups completed in {_time.perf_counter()-t_parallel_start:.3f}s")
 
             except Exception as e:
-                print(f"TM parallel lookup skipped: {e}")
+                print(f"TM lookup skipped: {e}")
 
         if term_translations:
             rules_text = "\n".join([f"  {en} → {ja}" for en, ja in term_translations])
@@ -1142,12 +1269,13 @@ class TranslatorThread(QThread):
                 [f'  "{s}" → "{t}"' for s, t in similar_examples]
             )
             system_content += (
-                f"\n\n=== SIMILAR TRANSLATIONS FROM MEMORY ===\n"
-                f"The following are previously translated similar texts. Prefer consistent terminology "
-                f"when the source closely matches, but prioritize accuracy over consistency when they diverge.\n\n"
+                f"\n\n=== SIMILAR TRANSLATIONS FROM LOADED MODS ===\n"
+                f"The following are translations from other loaded MODs with similar texts. "
+                f"Prefer consistent terminology when the source closely matches, "
+                f"but prioritize accuracy over consistency when they diverge.\n\n"
                 f"{examples_text}\n"
             )
-            print(f"[TM-SIMILAR] Added {len(similar_examples)} similar examples to prompt")
+            print(f"[MOD-SIMILAR] Added {len(similar_examples)} similar examples to prompt")
 
         if completed_context:
             context_examples = self._select_context_examples(
@@ -1188,7 +1316,7 @@ class TranslatorThread(QThread):
 
         data = {
             "model": self.model,
-            "temperature": 0.3,
+            "temperature": self.temperature,
             "messages": [
                 {
                     "role": "system",
@@ -1369,7 +1497,7 @@ class TranslatorThread(QThread):
             prompt = json.dumps(retry_protected, ensure_ascii=False)
             data = {
                 "model": self.model,
-                "temperature": 0.3,
+                "temperature": self.temperature,
                 "messages": [
                     {"role": "system", "content": system_content},
                     {"role": "user",
