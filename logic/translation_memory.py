@@ -98,6 +98,13 @@ class TranslationMemory:
         
         self._memory_cache = None
     
+    def delete(self, keys: list, mod_name: str = None):
+        """Delete translations by keys from memory."""
+        if not keys:
+            return
+        self._v2.delete(keys, mod_name=mod_name)
+        self._memory_cache = None
+    
     def get(self, key: str, mod_name: str = None) -> Optional[str]:
         """Get translation by key."""
         return self._v2.get(key, mod_name=mod_name)

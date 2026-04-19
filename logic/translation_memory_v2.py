@@ -446,6 +446,32 @@ class TranslationMemoryV2:
             
             conn.commit()
     
+    def delete(self, keys: List[str], mod_name: str = None):
+        """Delete translations by keys. mod_name があればそのMODのみ、なければ全mod_nameから削除。"""
+        if not keys:
+            return
+        
+        with self._write_lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            batch_size = 500
+            for i in range(0, len(keys), batch_size):
+                batch = keys[i:i + batch_size]
+                placeholders = ','.join(['?'] * len(batch))
+                if mod_name:
+                    cursor.execute(
+                        f'DELETE FROM translations WHERE key IN ({placeholders}) AND mod_name = ?',
+                        batch + [mod_name]
+                    )
+                else:
+                    cursor.execute(
+                        f'DELETE FROM translations WHERE key IN ({placeholders})',
+                        batch
+                    )
+            
+            conn.commit()
+    
     def get(self, key: str, mod_name: str = None) -> Optional[str]:
         """Get translation by key. mod_name があれば優先、なければ任意のmod_nameから取得。"""
         conn = self._get_connection()
@@ -880,11 +906,14 @@ class TranslationMemoryV2:
         print(f"[TM-SIMILAR] returning {len(results)} examples")
         return results
 
+    _TM_EMPTY_BLACKLIST = frozenset(['未使用', '使用不可', '未実装', '削除済み', 'deprecated', 'unused', 'n/a'])
+
     def _search_empty_source_pairs(self, cursor, batch_texts: List[str]) -> List[Tuple[float, float, str, str]]:
         batch_joined = ' '.join(t for t in batch_texts if isinstance(t, str))
         cleaned_batch = re.sub(r'&[0-9a-fk-or]', '', batch_joined)
         en_phrases = re.findall(r'[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*', cleaned_batch)
         en_phrases = [p for p in en_phrases if len(p.split()) >= 2]
+        en_phrases = [p for p in en_phrases if not any(w.lower() in self._TERM_STOP_WORDS for w in p.split())]
         if not en_phrases:
             return []
 
@@ -921,7 +950,15 @@ class TranslationMemoryV2:
                 trans = row['translation'] or ''
                 if not trans:
                     continue
+                trans_stripped = trans.strip().lower()
+                if trans_stripped in self._TM_EMPTY_BLACKLIST:
+                    continue
                 if re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', trans):
+                    phrase_words = set(w.lower() for w in phrase.split())
+                    key_text = (row['key'] or '').replace('_', ' ').replace('.', ' ').lower()
+                    key_words = set(key_text.split())
+                    if not phrase_words & key_words:
+                        continue
                     pair_key = (phrase, trans)
                     if pair_key not in seen:
                         seen.add(pair_key)
@@ -974,11 +1011,13 @@ class TranslationMemoryV2:
         cap_phrases = re.findall(r'[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+', cleaned_src)
         cjk_blocks = re.findall(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u30FC]{2,}', cleaned_trans)
         if cap_phrases and cjk_blocks:
+            cjk_used = set()
             for phrase in cap_phrases[:5]:
                 if not any(phrase == p[0] for p in pairs):
-                    for block in cjk_blocks[:5]:
-                        if 2 <= len(block) <= 20:
+                    for idx, block in enumerate(cjk_blocks[:10]):
+                        if idx not in cjk_used and 2 <= len(block) <= 20:
                             pairs.append((phrase, block))
+                            cjk_used.add(idx)
                             break
 
         if not pairs:
@@ -1224,7 +1263,7 @@ class TranslationMemoryV2:
                             score += 2.0
                         if abs(len(src_words) - len(words)) <= 1:
                             score += 0.5
-                        if len(src_stems) > len(stems) and ratio < 1.0:
+                        if len(src_stems) > len(stems):
                             extra_ratio = (len(src_stems) - len(stems)) / len(src_stems)
                             score -= extra_ratio * 0.5
                         if origin == 'user':
@@ -1280,6 +1319,8 @@ class TranslationMemoryV2:
                             best = cleaned_trans
 
             if best and best_score >= 0.8:
+                if best.strip().lower() in self._TM_EMPTY_BLACKLIST:
+                    continue
                 term_results[term_lower] = best
                 print(f"[TM-TERM-BATCH] '{term}' → '{best}' (score={best_score:.2f})")
 
@@ -1302,8 +1343,6 @@ class TranslationMemoryV2:
                 s = ns
             groups.append(group)
         return groups
-
-        return results
 
     _TERM_STOP_WORDS = frozenset({
         'there', 'here', 'this', 'that', 'these', 'those',

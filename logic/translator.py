@@ -654,7 +654,8 @@ class TranslatorThread(QThread):
                 "- Item/block names: 簡潔に。例: 「ダイヤモンドの剣」「不思議なリンゴ」\n"
                 "- Tooltip/description: 実用的で読みやすく。フォーマットコードを保持。\n"
                 "- Advancement titles: 短く力強く。\n"
-                "- Advancement descriptions: 実績のヒントを1文で。\n"
+                "- Advancement descriptions: 実績のヒントを1文で。暗黙の意味(因果関係・目的・結果)は明示的に訳す。\n"
+                "  'enough X to make Y come for you' → 'Yが襲いに来るほどXをする'(NOT 'Yが来るほどXをする')\n"
             )
 
         return base
@@ -765,12 +766,14 @@ class TranslatorThread(QThread):
                         rules.append((s, t))
                 continue
             en_words = re.findall(r'[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*', source)
+            cjk_chunks = re.findall(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u30FC]+', translation)
+            cjk_used = set()
             for phrase in en_words:
                 if len(phrase.split()) >= 2 and phrase in source:
-                    cjk_chunks = re.findall(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u30FC]+', translation)
-                    for k in cjk_chunks:
-                        if len(k) >= 3:
+                    for idx, k in enumerate(cjk_chunks):
+                        if idx not in cjk_used and len(k) >= 3:
                             rules.append((phrase, k))
+                            cjk_used.add(idx)
                             break
         seen = set()
         unique = []
