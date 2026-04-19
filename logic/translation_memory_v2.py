@@ -1315,50 +1315,13 @@ class TranslationMemoryV2:
             if len(all_rows) >= 500:
                 break
 
-        key_conditions = []
-        key_params = []
-        for term, stems in terms:
-            wsg = self._build_word_stem_groups_for(term)
-            if not wsg:
-                continue
-            key_and = []
-            for group in wsg:
-                or_parts = [f"(key LIKE ?)" for _ in group]
-                key_and.append(f"({' OR '.join(or_parts)})")
-                key_params.extend([f'%{v}%' for v in group])
-            key_conditions.append(f"({' AND '.join(key_and)})")
-
-        if key_conditions:
-            key_where = ' OR '.join(key_conditions)
-            exclude_clause2 = ""
-            exclude_params2 = []
-            if exclude_keys:
-                placeholders = ','.join(['?' for _ in exclude_keys])
-                exclude_clause2 = f"AND key NOT IN ({placeholders})"
-                exclude_params2 = list(exclude_keys)
-            cursor.execute(
-                f"SELECT DISTINCT source, translation, origin, key FROM translations "
-                f"WHERE (source = '' OR source IS NULL) AND ({key_where}) "
-                f"AND translation != '' AND LENGTH(translation) <= 40 "
-                f"{exclude_clause2} LIMIT 100",
-                key_params + exclude_params2
-            )
-            for row in cursor.fetchall():
-                rk = ('', row['key'] or '')
-                if rk not in seen_rk:
-                    seen_rk.add(rk)
-                    all_rows.append(row)
-
         return all_rows
 
     def _batch_search_terms_like(self, terms: list, exclude_keys: set) -> list:
         all_source_conditions = []
         all_source_params = []
-        all_key_conditions = []
-        all_key_params = []
 
         for term, stems in terms:
-            words = term.split()
             word_stem_groups = self._build_word_stem_groups_for(term)
             if not word_stem_groups:
                 continue
@@ -1370,18 +1333,6 @@ class TranslationMemoryV2:
                 all_source_params.extend([f'%{v}%' for v in group])
             all_source_conditions.append(f"({' AND '.join(and_parts)})")
 
-            all_variants = set()
-            for group in word_stem_groups:
-                all_variants.update(group)
-            key_variants = [v for v in all_variants if len(v) >= 3]
-            if key_variants:
-                key_and = []
-                for group in word_stem_groups:
-                    or_parts = [f"(key LIKE ?)" for _ in group]
-                    key_and.append(f"({' OR '.join(or_parts)})")
-                    all_key_params.extend([f'%{v}%' for v in group])
-                all_key_conditions.append(f"({' AND '.join(key_and)})")
-
         if not all_source_conditions:
             return []
 
@@ -1389,7 +1340,6 @@ class TranslationMemoryV2:
         cursor = conn.cursor()
 
         source_where = ' OR '.join(all_source_conditions)
-        key_where = ' OR '.join(all_key_conditions) if all_key_conditions else "1=0"
 
         exclude_clause = ""
         exclude_params = []
@@ -1400,15 +1350,12 @@ class TranslationMemoryV2:
 
         query = (
             f"SELECT DISTINCT source, translation, origin, key FROM translations "
-            f"WHERE translation != '' "
+            f"WHERE source != '' AND translation != '' "
             f"{exclude_clause} "
-            f"AND ("
-            f"  (source != '' AND ({source_where}))"
-            f"  OR ((source = '' OR source IS NULL) AND ({key_where}) AND LENGTH(translation) <= 40)"
-            f") "
+            f"AND ({source_where}) "
             f"LIMIT 300"
         )
-        cursor.execute(query, exclude_params + all_source_params + all_key_params)
+        cursor.execute(query, exclude_params + all_source_params)
         return cursor.fetchall()
 
     def _score_batch_term_rows(self, terms: list, rows: list) -> dict:
@@ -1429,31 +1376,20 @@ class TranslationMemoryV2:
                 continue
 
             source = row['source'] or ''
-            row_key = row['key'] or ''
+            if not source:
+                pre_rows.append(None)
+                continue
+
             origin = row['origin'] or 'ai'
             cleaned_trans = color_re.sub('', translation).strip()
-
-            row_stems = set()
-            if source:
-                src_clean = color_re.sub('', source).strip()
-                src_words = set(word_re.findall(src_clean.lower()))
-                row_stems = {self._stem(w) for w in src_words}
-                pre_rows.append({
-                    'source': source, 'origin': origin, 'key': row_key,
-                    'cleaned_trans': cleaned_trans, 'src_clean': src_clean,
-                    'src_stems': row_stems, 'src_words': src_words,
-                    'row_stems': row_stems, 'is_empty': False,
-                })
-            else:
-                key_text = row_key.replace('_', ' ').replace('.', ' ').lower()
-                key_words = set(word_re.findall(key_text))
-                row_stems = {self._stem(w) for w in key_words}
-                pre_rows.append({
-                    'source': source, 'origin': origin, 'key': row_key,
-                    'cleaned_trans': cleaned_trans, 'key_text': key_text,
-                    'key_stems': row_stems, 'row_stems': row_stems,
-                    'is_empty': True,
-                })
+            src_clean = color_re.sub('', source).strip()
+            src_words = set(word_re.findall(src_clean.lower()))
+            row_stems = {self._stem(w) for w in src_words}
+            pre_rows.append({
+                'source': source, 'origin': origin,
+                'cleaned_trans': cleaned_trans, 'src_clean': src_clean,
+                'src_stems': row_stems, 'src_words': src_words,
+            })
 
             for stem in row_stems:
                 stem_to_ri.setdefault(stem, set()).add(i)
@@ -1482,86 +1418,63 @@ class TranslationMemoryV2:
 
                 origin = rd['origin']
                 cleaned_trans = rd['cleaned_trans']
+                source = rd['source']
 
-                if not rd['is_empty']:
-                    source = rd['source']
-                    match = True
-                    for group in word_stem_groups:
-                        if not any(v in source.lower() for v in group):
-                            match = False
-                            break
-                    if not match:
-                        continue
+                match = True
+                for group in word_stem_groups:
+                    if not any(v in source.lower() for v in group):
+                        match = False
+                        break
+                if not match:
+                    continue
 
-                    src_clean = rd['src_clean']
-                    src_stems = rd['src_stems']
-                    src_words = rd['src_words']
+                src_clean = rd['src_clean']
+                src_stems = rd['src_stems']
+                src_words = rd['src_words']
 
-                    if len(source) <= self._MAX_TERM_SOURCE_LEN:
-                        overlap = len(stems & src_stems)
-                        ratio = overlap / len(stems) if stems else 0
-
-                        if ratio < 0.6:
-                            continue
-
-                        score = ratio
-                        if src_clean.lower() == term_lower:
-                            score += 2.0
-                        if abs(len(src_words) - len(words)) <= 1:
-                            score += 0.5
-                        if len(src_stems) > len(stems):
-                            extra_ratio = (len(src_stems) - len(stems)) / len(src_stems)
-                            score -= extra_ratio * 0.5
-                        if origin == 'user':
-                            score += 0.5
-                        elif origin == 'ai_corrected':
-                            score += 0.3
-
-                        trans_len = len(cleaned_trans)
-                        if trans_len <= 15:
-                            score += 0.3
-                        elif trans_len <= 30:
-                            score += 0.1
-
-                        if score > best_score:
-                            best_score = score
-                            best = cleaned_trans
-                    else:
-                        pairs = self._extract_proper_noun_pairs(source, rows[i]['translation'] or '')
-                        for en_phrase, ja_phrase in pairs:
-                            en_words = set(word_re.findall(en_phrase.lower()))
-                            en_stems = {self._stem(w) for w in en_words}
-                            overlap = len(stems & en_stems)
-                            ratio = overlap / len(stems) if stems else 0
-
-                            if ratio >= 0.6:
-                                score = 0.75 + (0.3 if origin == 'user' else 0.1 if origin == 'ai_corrected' else 0)
-                                if score > best_score:
-                                    best_score = score
-                                    best = ja_phrase
-                                break
-                else:
-                    key_text = rd['key_text']
-                    key_stems = rd['key_stems']
-
-                    match = True
-                    for group in word_stem_groups:
-                        if not any(v in key_text for v in group):
-                            match = False
-                            break
-                    if not match:
-                        continue
-
-                    overlap = len(stems & key_stems)
+                if len(source) <= self._MAX_TERM_SOURCE_LEN:
+                    overlap = len(stems & src_stems)
                     ratio = overlap / len(stems) if stems else 0
 
-                    if ratio >= 0.6:
-                        score = 0.7 + (0.2 if origin == 'user' else 0.1 if origin == 'ai_corrected' else 0)
-                        if len(cleaned_trans) <= 15:
-                            score += 0.2
-                        if score > best_score:
-                            best_score = score
-                            best = cleaned_trans
+                    if ratio < 0.6:
+                        continue
+
+                    score = ratio
+                    if src_clean.lower() == term_lower:
+                        score += 2.0
+                    if abs(len(src_words) - len(words)) <= 1:
+                        score += 0.5
+                    if len(src_stems) > len(stems):
+                        extra_ratio = (len(src_stems) - len(stems)) / len(src_stems)
+                        score -= extra_ratio * 0.5
+                    if origin == 'user':
+                        score += 0.5
+                    elif origin == 'ai_corrected':
+                        score += 0.3
+
+                    trans_len = len(cleaned_trans)
+                    if trans_len <= 15:
+                        score += 0.3
+                    elif trans_len <= 30:
+                        score += 0.1
+
+                    if score > best_score:
+                        best_score = score
+                        best = cleaned_trans
+                else:
+                    pairs = self._extract_proper_noun_pairs(source, rows[i]['translation'] or '')
+                    for en_phrase, ja_phrase in pairs:
+                        en_words = set(word_re.findall(en_phrase.lower()))
+                        en_stems = {self._stem(w) for w in en_words}
+                        overlap = len(stems & en_stems)
+                        ratio = overlap / len(stems) if stems else 0
+
+                        if ratio >= 0.6:
+                            score = 0.75 + (0.3 if origin == 'user' else 0.1 if origin == 'ai_corrected' else 0)
+                            if score > best_score:
+                                best_score = score
+                                best = ja_phrase
+                            break
 
             if best and best_score >= 0.8:
                 if best.strip().lower() in self._TM_EMPTY_BLACKLIST:
@@ -1695,20 +1608,6 @@ class TranslationMemoryV2:
 
         source_where = ' AND '.join(and_conditions)
 
-        all_variants = set()
-        for group in word_stem_groups:
-            all_variants.update(group)
-        key_variants = [v for v in all_variants if len(v) >= 3]
-
-        key_and_conditions = []
-        key_like_params = []
-        if key_variants:
-            for group in word_stem_groups:
-                or_parts = [f"(key LIKE ?)" for _ in group]
-                key_and_conditions.append(f"({' OR '.join(or_parts)})")
-                key_like_params.extend([f'%{v}%' for v in group])
-        key_where = ' AND '.join(key_and_conditions) if key_and_conditions else "1=0"
-
         exclude_clause = ""
         exclude_params = []
         if exclude_keys:
@@ -1718,15 +1617,12 @@ class TranslationMemoryV2:
 
         query = (
             f"SELECT source, translation, origin, key FROM translations "
-            f"WHERE translation != '' "
+            f"WHERE source != '' AND translation != '' "
             f"{exclude_clause} "
-            f"AND ("
-            f"  (source != '' AND ({source_where}))"
-            f"  OR ((source = '' OR source IS NULL) AND ({key_where}) AND LENGTH(translation) <= 40)"
-            f") "
+            f"AND ({source_where}) "
             f"LIMIT 100"
         )
-        cursor.execute(query, exclude_params + source_like_params + key_like_params)
+        cursor.execute(query, exclude_params + source_like_params)
         rows = cursor.fetchall()
 
         print(f"[TM-TERM-SEARCH] term='{term}', candidates={len(rows)}")
@@ -1738,87 +1634,68 @@ class TranslationMemoryV2:
             source = row['source'] or ''
             translation = row['translation'] or ''
             origin = row['origin'] or 'ai'
-            row_key = row['key'] or ''
 
             has_cjk = bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', translation))
             if not has_cjk:
                 continue
 
             cleaned_trans = re.sub(r'&[0-9a-fk-or]', '', translation).strip()
+            src_clean = re.sub(r'&[0-9a-fk-or]', '', source).strip()
 
-            if source:
-                src_clean = re.sub(r'&[0-9a-fk-or]', '', source).strip()
+            if len(source) <= self._MAX_TERM_SOURCE_LEN:
+                src_words = set(re.findall(r'[a-zA-Z]{2,}', src_clean.lower()))
+                src_stems = {self._stem(w) for w in src_words}
 
-                if len(source) <= self._MAX_TERM_SOURCE_LEN:
-                    src_words = set(re.findall(r'[a-zA-Z]{2,}', src_clean.lower()))
-                    src_stems = {self._stem(w) for w in src_words}
-
-                    overlap = len(stems & src_stems)
-                    ratio = overlap / len(stems) if stems else 0
-
-                    if ratio < 0.6:
-                        continue
-
-                    score = ratio
-                    if src_clean.lower() == term.lower():
-                        score += 2.0
-                    if abs(len(src_words) - len(words)) <= 1:
-                        score += 0.5
-                    if len(src_stems) > len(stems) and ratio < 1.0:
-                        extra_ratio = (len(src_stems) - len(stems)) / len(src_stems)
-                        score -= extra_ratio * 0.5
-                    if origin == 'user':
-                        score += 0.5
-                    elif origin == 'ai_corrected':
-                        score += 0.3
-
-                    trans_len = len(cleaned_trans)
-                    if trans_len <= 15:
-                        score += 0.3
-                    elif trans_len <= 30:
-                        score += 0.1
-
-                    if score > best_score:
-                        best_score = score
-                        best = cleaned_trans
-                        print(f"[TM-TERM-SEARCH]   source match: '{src_clean[:60]}' → '{cleaned_trans[:40]}' (score={score:.2f})")
-                else:
-                    pairs = self._extract_proper_noun_pairs(source, translation)
-                    for en_phrase, ja_phrase in pairs:
-                        en_words = set(re.findall(r'[a-zA-Z]{2,}', en_phrase.lower()))
-                        en_stems = {self._stem(w) for w in en_words}
-                        overlap = len(stems & en_stems)
-                        ratio = overlap / len(stems) if stems else 0
-
-                        if ratio >= 0.6:
-                            score = 0.75 + (0.3 if origin == 'user' else 0.1 if origin == 'ai_corrected' else 0)
-                            if score > best_score:
-                                best_score = score
-                                best = ja_phrase
-                                print(f"[TM-TERM-SEARCH]   long source pair: '{en_phrase}' → '{ja_phrase}' (ratio={ratio:.2f})")
-                            break
-                    else:
-                        result = self._extract_noun_pair_from_text(source, translation, term, stems)
-                        if result and best_score < 0.5:
-                            best_score = 0.5
-                            best = result
-                            print(f"[TM-TERM-SEARCH]   long source text extraction: '{term}' → '{result}'")
-            else:
-                key_text = row_key.replace('_', ' ').replace('.', ' ').lower()
-                key_words = set(re.findall(r'[a-zA-Z]{2,}', key_text))
-                key_stems = {self._stem(w) for w in key_words}
-
-                overlap = len(stems & key_stems)
+                overlap = len(stems & src_stems)
                 ratio = overlap / len(stems) if stems else 0
 
-                if ratio >= 0.6:
-                    score = 0.7 + (0.2 if origin == 'user' else 0.1 if origin == 'ai_corrected' else 0)
-                    if len(cleaned_trans) <= 15:
-                        score += 0.2
-                    if score > best_score:
-                        best_score = score
-                        best = cleaned_trans
-                        print(f"[TM-TERM-SEARCH]   key match: '{row_key}' → '{cleaned_trans[:40]}' (ratio={ratio:.2f})")
+                if ratio < 0.6:
+                    continue
+
+                score = ratio
+                if src_clean.lower() == term.lower():
+                    score += 2.0
+                if abs(len(src_words) - len(words)) <= 1:
+                    score += 0.5
+                if len(src_stems) > len(stems) and ratio < 1.0:
+                    extra_ratio = (len(src_stems) - len(stems)) / len(src_stems)
+                    score -= extra_ratio * 0.5
+                if origin == 'user':
+                    score += 0.5
+                elif origin == 'ai_corrected':
+                    score += 0.3
+
+                trans_len = len(cleaned_trans)
+                if trans_len <= 15:
+                    score += 0.3
+                elif trans_len <= 30:
+                    score += 0.1
+
+                if score > best_score:
+                    best_score = score
+                    best = cleaned_trans
+                    print(f"[TM-TERM-SEARCH]   source match: '{src_clean[:60]}' → '{cleaned_trans[:40]}' (score={score:.2f})")
+            else:
+                pairs = self._extract_proper_noun_pairs(source, translation)
+                for en_phrase, ja_phrase in pairs:
+                    en_words = set(re.findall(r'[a-zA-Z]{2,}', en_phrase.lower()))
+                    en_stems = {self._stem(w) for w in en_words}
+                    overlap = len(stems & en_stems)
+                    ratio = overlap / len(stems) if stems else 0
+
+                    if ratio >= 0.6:
+                        score = 0.75 + (0.3 if origin == 'user' else 0.1 if origin == 'ai_corrected' else 0)
+                        if score > best_score:
+                            best_score = score
+                            best = ja_phrase
+                            print(f"[TM-TERM-SEARCH]   long source pair: '{en_phrase}' → '{ja_phrase}' (ratio={ratio:.2f})")
+                        break
+                else:
+                    result = self._extract_noun_pair_from_text(source, translation, term, stems)
+                    if result and best_score < 0.5:
+                        best_score = 0.5
+                        best = result
+                        print(f"[TM-TERM-SEARCH]   long source text extraction: '{term}' → '{result}'")
 
         if best and best_score >= 0.8:
             print(f"[TM-TERM-SEARCH] result: '{term}' → '{best}' (best_score={best_score:.2f})")
