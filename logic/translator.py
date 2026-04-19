@@ -818,6 +818,8 @@ class TranslatorThread(QThread):
                 self.stopped.emit(results)
                 return
 
+        self._progressive_save(results, {}, validation_results)
+        
         if validation_results:
             self.validation_finished.emit(validation_results)
         

@@ -519,6 +519,21 @@ class MainWindow(QMainWindow):
             self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
             self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
         
+        if self.memory and self.loaded_mods:
+            try:
+                for path, mod_data in self.loaded_mods.items():
+                    translations = mod_data.get("translations", {})
+                    if translations:
+                        self.memory.set_context(
+                            mod_name=mod_data.get("name", ""),
+                            model=None,
+                            sources=mod_data.get("original", {})
+                        )
+                        self.memory.update(translations, origin='ai')
+                print(f"Close: saved translations for {len(self.loaded_mods)} MODs to memory")
+            except Exception as e:
+                print(f"Failed to save translations on close: {e}")
+        
         self._save_session()
         self._cleanup_recovery()
         self._autosave_timer.stop()
@@ -2469,6 +2484,18 @@ class MainWindow(QMainWindow):
             self.loaded_mods[self.current_mod_path]["translations"] = self.editor.get_translations()
             self.loaded_mods[self.current_mod_path]["review_status"] = self.editor.review_status
             self.refresh_all_mod_colors()
+
+            if self.memory and results:
+                try:
+                    self.memory.set_context(
+                        mod_name=self.loaded_mods[self.current_mod_path]["name"],
+                        model=None,
+                        sources=self.loaded_mods[self.current_mod_path]["original"]
+                    )
+                    self.memory.update(results, origin='ai')
+                    print(f"Translation memory saved: {len(results)} translations")
+                except Exception as e:
+                    print(f"Failed to save translation memory: {e}")
 
         self.progress_bar.hide()
         self.stop_translation_btn.hide()
