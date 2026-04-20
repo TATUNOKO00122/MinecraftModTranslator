@@ -564,13 +564,10 @@ class MainWindow(QMainWindow):
             self.mod_label.hide()
             self.editor.show()
             
-            self.editor.load_data(mod_data["original"])
+            self.editor.load_data(mod_data["original"],
+                                  translations=mod_data["translations"],
+                                  review_status=mod_data.get("review_status", {}))
             
-            self.editor.review_status = mod_data.get("review_status", {})
-            
-            self.editor.update_translations(mod_data["translations"])
-            
-            # Re-apply filter if active
             self.editor.filter_table()
             
             self.setWindowTitle(f"Minecraft MOD 翻訳ツール - {mod_data['name']}")
@@ -625,6 +622,8 @@ class MainWindow(QMainWindow):
         ai_count = sum(1 for k in translations if translations.get(k) and review_status.get(k, {}).get("origin") == "ai")
         tm_count = sum(1 for k in translations if translations.get(k) and review_status.get(k, {}).get("origin") == "tm")
         user_count = sum(1 for k, v in translations.items() if v and review_status.get(k, {}).get("origin") == "user")
+        bundled_count = sum(1 for k in translations if translations.get(k) and review_status.get(k, {}).get("origin") == "bundled")
+        rp_count = sum(1 for k in translations if translations.get(k) and review_status.get(k, {}).get("origin") == "resource_pack")
         issue_count = sum(1 for k, v in review_status.items() if v.get("issues") and not v.get("reviewed", False))
         locked_count = sum(1 for k, v in review_status.items() if v.get("locked", False))
         char_count = mod_data.get("_char_count", 0)
@@ -633,6 +632,8 @@ class MainWindow(QMainWindow):
             f"{name}",
             f"翻訳率: {ratio:.0f}% ({translated}/{total})",
             f"原文: {char_count:,} 文字",
+            f"├ MOD内蔵: {bundled_count}件",
+            f"├ RP適用: {rp_count}件",
             f"├ AI翻訳: {ai_count}件",
             f"├ TM適用: {tm_count}件",
             f"├ ユーザー: {user_count}件",
@@ -1140,6 +1141,7 @@ class MainWindow(QMainWindow):
         if confirm == QMessageBox.Yes:
             cleared_keys = list(mod_data["translations"].keys())
             mod_data["translations"] = {}
+            mod_data["review_status"] = {}
             if cleared_keys:
                 self.memory.delete(cleared_keys)
             self.editor.undo_stack.clear()
@@ -1175,7 +1177,8 @@ class MainWindow(QMainWindow):
             
             if self.current_mod_path and self.loaded_mods[self.current_mod_path].get("type") != "ftbquest":
                 self.editor.undo_stack.clear()
-                self.editor.load_data(self.loaded_mods[self.current_mod_path]["original"], {})
+                self.editor.load_data(self.loaded_mods[self.current_mod_path]["original"], {},
+                                      review_status=self.loaded_mods[self.current_mod_path].get("review_status", {}))
             
             self.refresh_all_mod_colors()
             self.statusBar().showMessage(f"{len(mods_to_clear)} MODの翻訳をクリアしました", 3000)
@@ -1557,13 +1560,18 @@ class MainWindow(QMainWindow):
             for mod_path, updates in mod_updates.items():
                 if mod_path in self.loaded_mods:
                     self.loaded_mods[mod_path]["translations"].update(updates)
+                    rp_review = {k: {"issues": [], "reviewed": True, "origin": "resource_pack"}
+                                 for k in updates if k not in self.loaded_mods[mod_path].get("review_status", {})}
+                    if rp_review:
+                        self.loaded_mods[mod_path].setdefault("review_status", {}).update(rp_review)
             print(f"[RP] apply translations: {_time.time() - t0:.2f}s, mods={len(mod_updates)}")
 
             t1 = _time.time()
             if self.current_mod_path and self.current_mod_path in mod_updates and self.current_mod_path in self.loaded_mods:
                 mod_data = self.loaded_mods[self.current_mod_path]
-                self.editor.load_data(mod_data["original"], translations=mod_data["translations"])
-                self.editor.review_status = mod_data.get("review_status", {})
+                self.editor.load_data(mod_data["original"],
+                                      translations=mod_data["translations"],
+                                      review_status=mod_data.get("review_status", {}))
                 self.editor.filter_table()
             print(f"[RP] editor reload: {_time.time() - t1:.2f}s")
             

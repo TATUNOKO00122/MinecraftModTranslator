@@ -79,6 +79,10 @@ class EditorWidget(QWidget):
     _COLOR_USER_TRANS_FG = QColor("#88eebb")
     _COLOR_VALIDATED = QColor("#1a4a2a")
     _COLOR_VALIDATED_FG = QColor("#66dd99")
+    _COLOR_BUNDLED = QColor("#2a2a6b")
+    _COLOR_BUNDLED_FG = QColor("#aab8ff")
+    _COLOR_RP = QColor("#4a2a6b")
+    _COLOR_RP_FG = QColor("#ddaaff")
     _COLOR_SAME = QColor("#6b5a2f")
     _COLOR_SAME_FG = QColor("#ffffff")
     _COLOR_TRANSLATED = _COLOR_AI_TRANS
@@ -93,6 +97,8 @@ class EditorWidget(QWidget):
     _BRUSH_AI_ISSUES = QBrush(_COLOR_AI_ISSUES, Qt.SolidPattern)
     _BRUSH_USER_TRANS = QBrush(_COLOR_USER_TRANS, Qt.SolidPattern)
     _BRUSH_VALIDATED = QBrush(_COLOR_VALIDATED, Qt.SolidPattern)
+    _BRUSH_BUNDLED = QBrush(_COLOR_BUNDLED, Qt.SolidPattern)
+    _BRUSH_RP = QBrush(_COLOR_RP, Qt.SolidPattern)
     _BRUSH_SAME = QBrush(_COLOR_SAME, Qt.SolidPattern)
     _BRUSH_TRANSLATED = _BRUSH_AI_TRANS
     _BRUSH_ISSUES = _BRUSH_AI_ISSUES
@@ -136,6 +142,8 @@ class EditorWidget(QWidget):
         self.filter_combo.addItem("TM自動適用", 7)
         self.filter_combo.addItem("AI翻訳のみ", 8)
         self.filter_combo.addItem("ユーザー翻訳", 9)
+        self.filter_combo.addItem("MOD内蔵", 10)
+        self.filter_combo.addItem("リソースパック", 11)
         self.filter_combo.currentIndexChanged.connect(self.filter_table)
         toolbar.addWidget(self.filter_combo)
         
@@ -178,10 +186,10 @@ class EditorWidget(QWidget):
         self.translations = {}
         self._key_to_row = {}
         
-    def load_data(self, data, translations=None):
+    def load_data(self, data, translations=None, review_status=None):
         self.original_data = data
         self.translations = translations if translations is not None else {}
-        self.review_status = {}
+        self.review_status = review_status if review_status is not None else {}
         self.user_edited_keys = set()
         self.undo_stack.clear()
         self._previous_cell_texts.clear()
@@ -261,6 +269,22 @@ class EditorWidget(QWidget):
         self.table.setUpdatesEnabled(True)
         self._programmatic_update = False
 
+    def _origin_label(self, key):
+        origin = self.review_status.get(key, {}).get("origin", "")
+        if origin == "tm":
+            return "翻訳メモリ"
+        elif origin == "ai":
+            return "AI翻訳"
+        elif origin == "user":
+            return "ユーザー"
+        elif origin == "bundled":
+            return "MOD内蔵"
+        elif origin == "resource_pack":
+            return "リソースパック"
+        elif origin == "skipped":
+            return "翻訳不要"
+        return "未翻訳"
+
     def _is_lockable(self, key, original):
         if should_skip_translation(original):
             return True
@@ -302,23 +326,34 @@ class EditorWidget(QWidget):
                 brush, fg = self._BRUSH_AI_ISSUES, self._COLOR_AI_ISSUES_FG
             elif origin == "tm":
                 brush, fg = self._BRUSH_TM_MATCH, self._COLOR_TM_MATCH_FG
+            elif origin == "bundled":
+                brush, fg = self._BRUSH_BUNDLED, self._COLOR_BUNDLED_FG
+            elif origin == "resource_pack":
+                brush, fg = self._BRUSH_RP, self._COLOR_RP_FG
             else:
                 brush, fg = self._BRUSH_AI_TRANS, self._COLOR_AI_TRANS_FG
         elif translation and translation == original:
             brush, fg = self._BRUSH_SAME, self._COLOR_SAME_FG
         else:
+            origin_label = self._origin_label(key)
             for col in range(3):
                 item = self.table.item(row, col)
                 if item:
                     item.setData(Qt.BackgroundRole, None)
                     item.setData(Qt.ForegroundRole, None)
+                    if col == 2:
+                        item.setToolTip(f"原文: {original}\n翻訳元: {origin_label}")
             return
 
+        origin_label = self._origin_label(key)
         for col in range(3):
             item = self.table.item(row, col)
             if item:
                 item.setBackground(brush)
                 item.setForeground(fg)
+                if col == 2:
+                    original_text = self.table.item(row, 1).text()
+                    item.setToolTip(f"原文: {original_text}\n翻訳元: {origin_label}")
 
     def filter_table(self):
         filter_text = self.search_input.text().lower()
@@ -366,6 +401,12 @@ class EditorWidget(QWidget):
                 match_filter = review.get("origin") == "ai"
             elif filter_state == 9:  # User translated
                 match_filter = key in self.user_edited_keys and bool(translation)
+            elif filter_state == 10:  # Bundled (MOD内蔵)
+                review = self.review_status.get(key, {})
+                match_filter = review.get("origin") == "bundled"
+            elif filter_state == 11:  # Resource pack
+                review = self.review_status.get(key, {})
+                match_filter = review.get("origin") == "resource_pack"
             
             self.table.setRowHidden(i, not (match_search and match_filter))
         
@@ -397,7 +438,6 @@ class EditorWidget(QWidget):
                 item = self.table.item(row, 2)
                 item.setText(text)
                 original = self.table.item(row, 1).text()
-                item.setToolTip(f"原文: {original}")
                 self._previous_cell_texts[(row, 2)] = text
                 self._update_row_color(row, text, original)
         
