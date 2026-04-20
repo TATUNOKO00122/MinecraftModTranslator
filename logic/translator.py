@@ -1253,16 +1253,28 @@ class TranslatorThread(QThread):
                 print(f"TM lookup skipped: {e}")
 
         if term_translations:
-            rules_text = "\n".join([f"  {en} → {ja}" for en, ja in term_translations])
+            examples = []
+            for item in term_translations:
+                if len(item) == 3:
+                    en, ja, src = item
+                else:
+                    en, ja = item[:2]
+                    src = en
+                if src.lower() == en.lower():
+                    examples.append(f"  {en} → {ja}")
+                else:
+                    examples.append(f"  「{en}」を含む翻訳例: \"{src}\" → \"{ja}\"")
+            rules_text = "\n".join(examples)
             system_content += (
-                f"\n\n=== MANDATORY TERM TRANSLATIONS ===\n"
-                f"The following terms have established translations from other MODs/translations.\n"
-                f"You MUST use these EXACT Japanese terms when they appear:\n"
+                f"\n\n=== REFERENCE TERM TRANSLATIONS ===\n"
+                f"The following are translation examples from previously translated content.\n"
+                f"These show how terms have been used in context, not direct 1:1 term mappings.\n"
+                f"Use them as REFERENCE for consistency, adapting to each item's context:\n"
                 f"{rules_text}\n"
-                f"CRITICAL RULES:\n"
-                f"- These terms are ALREADY TRANSLATED. Use the EXACT Japanese text shown above.\n"
-                f"- Do NOT re-translate, paraphrase, or invent new translations for these terms.\n"
-                f"- Singular/plural variants must also use the same translation.\n"
+                f"GUIDELINES:\n"
+                f"- Use consistent terminology when translating the same term across items.\n"
+                f"- The examples show the translation of the FULL source text, not just the highlighted term.\n"
+                f"- Adapt translations to fit each item's specific context.\n"
             )
 
         if similar_examples:

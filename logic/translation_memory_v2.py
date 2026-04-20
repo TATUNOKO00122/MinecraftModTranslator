@@ -1165,7 +1165,7 @@ class TranslationMemoryV2:
                                cross_mod_data: dict = None,
                                exclude_keys: set = None,
                                limit: int = 30,
-                               cross_mod_index: dict = None) -> List[Tuple[str, str]]:
+                               cross_mod_index: dict = None) -> List[Tuple[str, str, str]]:
         """
         バッチテキストから固有名詞（アイテム名・ブロック名等）を抽出し、
         TM全体と他MODデータから訳語を検索する。
@@ -1205,17 +1205,23 @@ class TranslationMemoryV2:
         for term, stems in terms:
             if term.lower() in seen:
                 continue
-            ja = term_results.get(term.lower())
-            if not ja and cross_mod_data:
-                if cross_mod_index:
-                    ja = self._search_term_in_cross_mod_indexed(term, stems, cross_mod_index, cross_mod_data, exclude_keys)
-                else:
-                    ja = self._search_term_in_cross_mod(term, stems, cross_mod_data, exclude_keys)
-
-            if ja:
+            matched = term_results.get(term.lower())
+            if matched:
+                ja, src = matched
                 seen.add(term.lower())
-                results.append((term, ja))
-                print(f"[TM-TERM] MATCH: '{term}' → '{ja}'")
+                results.append((term, ja, src))
+                print(f"[TM-TERM] MATCH: '{term}' → '{ja}' (from: '{src}')")
+            elif cross_mod_data:
+                cm_result = None
+                if cross_mod_index:
+                    cm_result = self._search_term_in_cross_mod_indexed(term, stems, cross_mod_index, cross_mod_data, exclude_keys)
+                else:
+                    cm_result = self._search_term_in_cross_mod(term, stems, cross_mod_data, exclude_keys)
+                if cm_result:
+                    ja, src = cm_result
+                    seen.add(term.lower())
+                    results.append((term, ja, src))
+                    print(f"[TM-TERM] MATCH: '{term}' → '{ja}' (from: '{src}')")
 
             if len(results) >= limit:
                 break
@@ -1397,6 +1403,7 @@ class TranslationMemoryV2:
             word_stem_groups = self._build_word_stem_groups_for(term)
             words = term.split()
             best = None
+            best_source = ""
             best_score = 0.0
             term_lower = term.lower()
 
@@ -1471,6 +1478,7 @@ class TranslationMemoryV2:
                     if score > best_score:
                         best_score = score
                         best = cleaned_trans
+                        best_source = src_clean
                 else:
                     pairs = self._extract_proper_noun_pairs(source, rows[i]['translation'] or '')
                     for en_phrase, ja_phrase in pairs:
@@ -1484,13 +1492,14 @@ class TranslationMemoryV2:
                             if score > best_score:
                                 best_score = score
                                 best = ja_phrase
+                                best_source = en_phrase
                             break
 
             if best and best_score >= 0.8:
                 if best.strip().lower() in self._TM_EMPTY_BLACKLIST:
                     continue
-                term_results[term_lower] = best
-                print(f"[TM-TERM-BATCH] '{term}' → '{best}' (score={best_score:.2f})")
+                term_results[term_lower] = (best, best_source)
+                print(f"[TM-TERM-BATCH] '{term}' → '{best}' from '{best_source}' (score={best_score:.2f})")
 
         return term_results
 
@@ -1728,11 +1737,12 @@ class TranslationMemoryV2:
 
     def _search_term_in_cross_mod(self, term: str, stems: set,
                                    cross_mod_data: dict,
-                                   exclude_keys: set = None) -> Optional[str]:
+                                   exclude_keys: set = None) -> Optional[Tuple[str, str]]:
         """
         現在のセッションでロードされている他MODデータから訳語を検索する。
         cross_mod_data: {key: {"original": "English text", "translation": "日本語"}}
         原文(English)にtermが含まれるエントリから訳語を返す。
+        Returns: (translation, original_source) or None
         """
         if not cross_mod_data:
             return None
@@ -1742,6 +1752,7 @@ class TranslationMemoryV2:
         term_lower = term.lower()
         words = term.split()
         best = None
+        best_source = ""
         best_score = 0.0
 
         for key, entry in cross_mod_data.items():
@@ -1805,16 +1816,17 @@ class TranslationMemoryV2:
             if score > best_score:
                 best_score = score
                 best = re.sub(r'&[0-9a-fk-or]', '', translation).strip()
+                best_source = orig_clean
 
         if best and best_score >= 0.8:
-            return best
+            return (best, best_source)
 
         return None
 
     def _search_term_in_cross_mod_indexed(self, term: str, stems: set,
                                            cross_mod_index: dict,
                                            cross_mod_data: dict,
-                                           exclude_keys: set = None) -> Optional[str]:
+                                           exclude_keys: set = None) -> Optional[Tuple[str, str]]:
         exclude_keys = exclude_keys or set()
         candidates = {}
 
@@ -1832,6 +1844,7 @@ class TranslationMemoryV2:
         term_lower = term.lower()
         words = term.split()
         best = None
+        best_source = ""
         best_score = 0.0
 
         for (key, entry), _ in scored[:50]:
@@ -1890,9 +1903,10 @@ class TranslationMemoryV2:
             if score > best_score:
                 best_score = score
                 best = re.sub(r'&[0-9a-fk-or]', '', translation).strip()
+                best_source = orig_clean
 
         if best and best_score >= 0.8:
-            return best
+            return (best, best_source)
 
         return None
 
