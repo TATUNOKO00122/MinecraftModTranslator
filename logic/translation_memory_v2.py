@@ -444,7 +444,18 @@ class TranslationMemoryV2:
                 if not translation:
                     continue
                 
+                if isinstance(translation, list):
+                    translation = '\n'.join(str(v) for v in translation)
+                elif not isinstance(translation, str):
+                    translation = str(translation)
+                if not isinstance(key, str):
+                    key = str(key)
+                
                 source = sources.get(key, '') if sources else ''
+                if isinstance(source, list):
+                    source = '\n'.join(str(v) for v in source)
+                elif source and not isinstance(source, str):
+                    source = str(source)
                 category = self._detect_category(key)
                 source_hash = self._hash_text(source)
                 effective_mod = mod_name if mod_name else ''
@@ -788,6 +799,10 @@ class TranslationMemoryV2:
     _SIMILARITY_THRESHOLD = 0.3
     _MAX_EXAMPLE_LENGTH = 120
     _ORIGIN_WEIGHT = {'user': 3.0, 'ai_corrected': 2.0, 'ai': 1.0}
+    _SIMILAR_JACCARD_THRESHOLD = 0.4
+    _SIMILAR_LEN_RATIO_MIN = 0.4
+    _SIMILAR_JACCARD_W = 0.4
+    _SIMILAR_STR_W = 0.6
 
     def _compute_jaccard(self, stems_a: set, stems_b: set) -> float:
         if not stems_a or not stems_b:
@@ -910,7 +925,7 @@ class TranslationMemoryV2:
 
             jaccard = self._compute_jaccard(batch_stems, source_stems)
 
-            if jaccard >= 0.4:
+            if jaccard >= self._SIMILAR_JACCARD_THRESHOLD:
                 source_clean_text = source_clean.strip()
                 source_len = len(source_clean_text)
 
@@ -920,7 +935,7 @@ class TranslationMemoryV2:
                     if bt_len == 0:
                         continue
                     len_ratio = source_len / bt_len if bt_len > source_len else bt_len / source_len
-                    if len_ratio < 0.4:
+                    if len_ratio < self._SIMILAR_LEN_RATIO_MIN:
                         continue
                     overlap = len(bt_stems & source_stems)
                     if overlap > 0:
@@ -935,7 +950,7 @@ class TranslationMemoryV2:
                     if sim > best_str_sim:
                         best_str_sim = sim
 
-                hybrid = 0.4 * jaccard + 0.6 * best_str_sim
+                hybrid = self._SIMILAR_JACCARD_W * jaccard + self._SIMILAR_STR_W * best_str_sim
                 score = hybrid * origin_w
 
                 if len(source) <= self._MAX_EXAMPLE_LENGTH and len(translation) <= self._MAX_EXAMPLE_LENGTH:
@@ -1106,13 +1121,6 @@ class TranslationMemoryV2:
                             cjk_used.add(idx)
                             break
 
-        if not pairs:
-            src_words = re.findall(r'[A-Z][a-zA-Z]+', cleaned_src)
-            if src_words:
-                has_cjk = bool(re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', cleaned_trans))
-                if has_cjk:
-                    pairs.append((cleaned_src.strip(), cleaned_trans.strip()))
-
         return list(set(pairs))
 
     def build_cross_mod_index(self, cross_mod_data):
@@ -1165,12 +1173,11 @@ class TranslationMemoryV2:
                                cross_mod_data: dict = None,
                                exclude_keys: set = None,
                                limit: int = 30,
-                               cross_mod_index: dict = None) -> List[Tuple[str, str, str]]:
+                               cross_mod_index: dict = None,
+                               same_mod_data: dict = None) -> List[Tuple[str, str, str]]:
         """
-        バッチテキストから固有名詞（アイテム名・ブロック名等）を抽出し、
-        TM全体と他MODデータから訳語を検索する。
-
-        "Gem Extractors" → stem "gem extract" → TM内の "Gem Extractor" (単数形) もヒット
+        バッチテキストからn-gramベースで翻訳例を検索する。
+        バッチ文全体のn-gramを生成し、TM/cross-modデータとの最長マッチ優先でスコアリング。
         """
         if not batch_texts or limit <= 0:
             return []
@@ -1179,6 +1186,21 @@ class TranslationMemoryV2:
         t0 = _time.perf_counter()
 
         exclude_keys = exclude_keys or set()
+
+        batch_ngram_sets = []
+        for t in batch_texts:
+            if not isinstance(t, str):
+                continue
+            words = self._tokenize_for_ngram(t)
+            if words:
+                batch_ngram_sets.append(self._build_ngrams(words, max_n=4))
+
+        if not batch_ngram_sets:
+            return []
+
+        combined_batch_ngrams = set()
+        for ngs in batch_ngram_sets:
+            combined_batch_ngrams |= ngs
 
         seen_terms = {}
         for t in batch_texts:
@@ -1195,38 +1217,207 @@ class TranslationMemoryV2:
 
         print(f"[TM-TERM] extracted {len(terms)} terms: {[t[0] for t in terms[:10]]}")
 
-        batch_rows = self._batch_search_terms_in_tm(terms, exclude_keys)
-        print(f"[TM-TERM] batch SQL returned {len(batch_rows)} rows in {_time.perf_counter()-t0:.3f}s")
+        all_source_pairs = []
+        if same_mod_data:
+            for key, data in same_mod_data.items():
+                if key in exclude_keys:
+                    continue
+                orig = data.get("original", "")
+                trans = data.get("translation", "")
+                if orig and trans:
+                    all_source_pairs.append((orig, trans, "same_mod"))
+        if cross_mod_data:
+            for key, data in cross_mod_data.items():
+                orig = data.get("original", "")
+                trans = data.get("translation", "")
+                if orig and trans:
+                    all_source_pairs.append((orig, trans, "cross_mod"))
 
-        term_results = self._score_batch_term_rows(terms, batch_rows)
+        scored_results = []
+
+        if all_source_pairs:
+            source_ngram_cache = {}
+            for source, translation, src_type in all_source_pairs:
+                source_lower = source.lower()
+                if source_lower in source_ngram_cache:
+                    source_ngrams, source_words = source_ngram_cache[source_lower]
+                else:
+                    sw = self._tokenize_for_ngram(source)
+                    source_ngrams = self._build_ngrams(sw, max_n=4) if sw else set()
+                    source_words = set(sw) if sw else set()
+                    source_ngram_cache[source_lower] = (source_ngrams, source_words)
+
+                best_score = 0.0
+                best_match_info = ""
+                for bt_ngrams in batch_ngram_sets:
+                    common = bt_ngrams & source_ngrams
+                    if not common:
+                        continue
+                    max_match_len = max(len(ng.split()) for ng in common)
+                    if max_match_len < 2:
+                        continue
+                    coverage = len(source_words & set(' '.join(ng).split() for ng in bt_ngrams)) / max(len(source_words), 1)
+                    score = max_match_len * 100 + len(common) * 10 + coverage * 50
+                    if score > best_score:
+                        best_score = score
+                        best_match_info = f"max_n={max_match_len}, common={len(common)}"
+
+                if best_score > 0:
+                    origin_boost = 0.5 if src_type == "same_mod" else 0.0
+                    scored_results.append((best_score + origin_boost, source, translation, src_type))
+
+        if terms and len(scored_results) < limit:
+            tm_results = self._search_terms_in_tm_ngram(terms, exclude_keys, limit)
+            for term, ja, src in tm_results:
+                scored_results.append((50.0, term, ja, "tm"))
+
+        scored_results.sort(key=lambda x: -x[0])
 
         results = []
-        seen = set()
-        for term, stems in terms:
-            if term.lower() in seen:
+        seen_sources = set()
+        for _, source, translation, src_type in scored_results:
+            src_key = source.lower()
+            if src_key in seen_sources:
                 continue
-            matched = term_results.get(term.lower())
-            if matched:
-                ja, src = matched
-                seen.add(term.lower())
-                results.append((term, ja, src))
-                print(f"[TM-TERM] MATCH: '{term}' → '{ja}' (from: '{src}')")
-            elif cross_mod_data:
-                cm_result = None
-                if cross_mod_index:
-                    cm_result = self._search_term_in_cross_mod_indexed(term, stems, cross_mod_index, cross_mod_data, exclude_keys)
-                else:
-                    cm_result = self._search_term_in_cross_mod(term, stems, cross_mod_data, exclude_keys)
-                if cm_result:
-                    ja, src = cm_result
-                    seen.add(term.lower())
-                    results.append((term, ja, src))
-                    print(f"[TM-TERM] MATCH: '{term}' → '{ja}' (from: '{src}')")
-
+            seen_sources.add(src_key)
+            if src_type == "tm":
+                results.append((source, translation, source))
+            else:
+                results.append((source, translation, source))
             if len(results) >= limit:
                 break
 
         print(f"[TM-TERM] {len(results)} matches in {_time.perf_counter()-t0:.3f}s")
+        return results
+
+    def _search_terms_in_tm_ngram(self, terms: list, exclude_keys: set, limit: int) -> list:
+        """n-gramベースでTMから翻訳例を検索する。"""
+        if not terms:
+            return []
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        cjk_re = re.compile(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]')
+        color_re = re.compile(r'&[0-9a-fk-or]')
+
+        word_stem_groups = self._build_word_stem_groups_for
+        all_rows = []
+        seen_rk = set()
+
+        exclude_clause = ""
+        exclude_params = []
+        if exclude_keys:
+            placeholders = ','.join(['?' for _ in exclude_keys])
+            exclude_clause = f"AND t.key NOT IN ({placeholders})"
+            exclude_params = list(exclude_keys)
+
+        for term, stems in terms[:20]:
+            if self._fts5_available:
+                try:
+                    match_expr = self._build_fts5_term_expr(term)
+                    if match_expr:
+                        cursor.execute(
+                            f'SELECT DISTINCT source, translation, origin, key '
+                            f'FROM translations_fts f '
+                            f'JOIN translations t ON t.id = f.rowid '
+                            f'WHERE f.source MATCH ? AND t.source != "" AND t.translation != "" '
+                            f'{exclude_clause} LIMIT 30',
+                            [match_expr] + exclude_params
+                        )
+                        for row in cursor.fetchall():
+                            rk = (row['source'] or '', row['key'] or '')
+                            if rk not in seen_rk:
+                                seen_rk.add(rk)
+                                all_rows.append(row)
+                except Exception:
+                    pass
+            else:
+                groups = word_stem_groups(term)
+                if not groups:
+                    continue
+                and_parts = []
+                params = []
+                for group in groups:
+                    or_parts = [f"(source LIKE ?)" for _ in group]
+                    and_parts.append(f"({' OR '.join(or_parts)})")
+                    params.extend([f'%{v}%' for v in group])
+                source_where = ' AND '.join(and_parts)
+                cursor.execute(
+                    f"SELECT DISTINCT source, translation, origin, key FROM translations "
+                    f"WHERE source != '' AND translation != '' "
+                    f"{exclude_clause} AND ({source_where}) LIMIT 30",
+                    exclude_params + params
+                )
+                for row in cursor.fetchall():
+                    rk = (row['source'] or '', row['key'] or '')
+                    if rk not in seen_rk:
+                        seen_rk.add(rk)
+                        all_rows.append(row)
+
+            if len(all_rows) >= 300:
+                break
+
+        results = []
+        for term, stems in terms:
+            term_lower = term.lower()
+            term_words = set(term.split())
+            best = None
+            best_source = ""
+            best_score = 0.0
+
+            for row in all_rows:
+                source = row['source'] or ''
+                translation = row['translation'] or ''
+                if not cjk_re.search(translation):
+                    continue
+
+                source_clean = color_re.sub('', source).strip()
+                source_ngrams = self._build_ngrams(
+                    self._tokenize_for_ngram(source_clean), max_n=4
+                ) if source_clean else set()
+                if not source_ngrams:
+                    continue
+
+                term_ngrams = self._build_ngrams(term_words, max_n=len(term_words))
+                common = source_ngrams & term_ngrams
+                if not common:
+                    continue
+
+                max_match_len = max(len(ng.split()) for ng in common)
+                if max_match_len < 1:
+                    continue
+
+                from difflib import SequenceMatcher as _SM
+                str_sim = _SM(None, term_lower, source_clean.lower(), autojunk=False).ratio()
+
+                score = max_match_len * 100 + len(common) * 10
+                if max_match_len == len(term_words):
+                    score += 50
+                score *= (0.5 + 0.5 * str_sim)
+
+                if source_clean.lower() == term_lower:
+                    score += 100
+
+                origin = row['origin'] or 'ai'
+                if origin == 'user':
+                    score += 20
+                elif origin == 'ai_corrected':
+                    score += 10
+
+                if score > best_score:
+                    best_score = score
+                    trans_clean = color_re.sub('', translation).strip()
+                    best = trans_clean
+                    best_source = source_clean
+
+            if best and best_score >= 30:
+                results.append((term, best, best_source))
+                print(f"[TM-TERM-NGRAM] '{term}' → '{best}' from '{best_source}' (score={best_score:.0f})")
+
+            if len(results) >= limit:
+                break
+
         return results
 
     def _build_fts5_term_expr(self, term: str) -> str:
@@ -1539,11 +1730,27 @@ class TranslationMemoryV2:
 
     _MAX_TERM_SOURCE_LEN = 60
 
+    @staticmethod
+    def _tokenize_for_ngram(text):
+        cleaned = re.sub(r'&[0-9a-fk-or]', '', text)
+        cleaned = re.sub(r'[§\[\]{}()<>/|:;.,!?"\'\\]', ' ', cleaned)
+        cleaned = re.sub(r'\d+', ' ', cleaned)
+        words = [w.lower() for w in cleaned.split() if len(w) >= 2]
+        return words
+
+    @staticmethod
+    def _build_ngrams(words, max_n=4):
+        ngrams = set()
+        for n in range(1, min(max_n, len(words)) + 1):
+            for i in range(len(words) - n + 1):
+                ngrams.add(' '.join(words[i:i + n]))
+        return ngrams
+
     def _extract_terms_from_text(self, text: str) -> List[Tuple[str, set]]:
         """
-        テキストから固有名詞候補を抽出する。
-        カラーコード区切りセグメントと、連続大文字語列を対象。
-        単一の大文字単語はノイズが多いため除外。
+        テキストからn-gramベースで固有名詞候補を抽出する。
+        大文字始まりの連続語句とカラーコードセグメントからn-gramを生成し、
+        文脈的に意味のある単語列を返す。
 
         Returns:
             [(term_text, stem_set), ...] 重複排除済み
@@ -1558,24 +1765,33 @@ class TranslationMemoryV2:
                 continue
             words = seg.split()
             words = [w for w in words if w.lower() not in self._TERM_STOP_WORDS and len(w) >= 2]
-            if not words:
+            if len(words) < 1:
                 continue
-            if 1 <= len(words) <= 5 and any(re.search(r'[A-Z][a-zA-Z]+', w) for w in words):
+            if any(re.search(r'[A-Z][a-zA-Z]+', w) for w in words):
+                term = ' '.join(words)
                 stems = {self._stem(w.lower()) for w in words}
-                stems -= {self._stem(w) for w in self._TERM_STOP_WORDS}
                 if stems:
-                    candidates.append((seg, stems))
+                    candidates.append((term, stems))
+                    for n in range(2, len(words) + 1):
+                        for i in range(len(words) - n + 1):
+                            sub = ' '.join(words[i:i + n])
+                            sub_stems = {self._stem(w.lower()) for w in words[i:i + n]}
+                            if sub_stems:
+                                candidates.append((sub, sub_stems))
 
         cap_phrases = re.findall(r'[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+', text)
         for phrase in cap_phrases:
-            words = phrase.split()
-            words = [w for w in words if w.lower() not in self._TERM_STOP_WORDS]
-            if len(words) < 2:
+            all_words = [w for w in phrase.split() if w.lower() not in self._TERM_STOP_WORDS and len(w) >= 2]
+            if len(all_words) < 2:
                 continue
-            stems = {self._stem(w.lower()) for w in words}
-            stems -= {self._stem(w) for w in self._TERM_STOP_WORDS}
-            if stems:
-                candidates.append((phrase, stems))
+
+            for start in range(len(all_words)):
+                for end in range(start + 2, len(all_words) + 1):
+                    sub_words = all_words[start:end]
+                    sub_phrase = ' '.join(sub_words)
+                    stems = {self._stem(w.lower()) for w in sub_words}
+                    if stems:
+                        candidates.append((sub_phrase, stems))
 
         unique = []
         seen = set()
@@ -1585,6 +1801,7 @@ class TranslationMemoryV2:
                 seen.add(key)
                 unique.append((term, stems))
 
+        unique.sort(key=lambda x: -len(x[0].split()))
         return unique
 
     def _search_term_in_tm(self, term: str, stems: set,
@@ -1787,17 +2004,18 @@ class TranslationMemoryV2:
             score = 0.0
 
             if ratio >= 0.8:
-                score = ratio
                 if orig_clean.strip().lower() == term_lower:
-                    score += 2.0
+                    score = 3.0
+                else:
+                    score = ratio
                 if abs(len(orig_words) - len(words)) <= 1:
                     score += 0.5
-                if len(translation) <= 30:
+                if len(translation) <= 15:
                     score += 0.3
-                elif len(translation) <= 50:
+                elif len(translation) <= 30:
                     score += 0.1
-                else:
-                    score -= 0.5
+                elif len(translation) > 40:
+                    score -= 1.0
 
             if score <= 0 and term_lower in orig_lower:
                 score = 0.5
@@ -1818,7 +2036,7 @@ class TranslationMemoryV2:
                 best = re.sub(r'&[0-9a-fk-or]', '', translation).strip()
                 best_source = orig_clean
 
-        if best and best_score >= 0.8:
+        if best and best_score >= 1.0:
             return (best, best_source)
 
         return None
@@ -1828,18 +2046,6 @@ class TranslationMemoryV2:
                                            cross_mod_data: dict,
                                            exclude_keys: set = None) -> Optional[Tuple[str, str]]:
         exclude_keys = exclude_keys or set()
-        candidates = {}
-
-        for stem in stems:
-            for entry_tuple in cross_mod_index.get(stem, []):
-                key = entry_tuple[0]
-                if key in exclude_keys:
-                    continue
-                if entry_tuple not in candidates:
-                    candidates[entry_tuple] = 0
-                candidates[entry_tuple] += 1
-
-        scored = sorted(candidates.items(), key=lambda x: -x[1])
 
         term_lower = term.lower()
         words = term.split()
@@ -1847,7 +2053,18 @@ class TranslationMemoryV2:
         best_source = ""
         best_score = 0.0
 
-        for (key, entry), _ in scored[:50]:
+        seen_keys = set()
+        for stem in stems:
+            for entry_tuple in cross_mod_index.get(stem, []):
+                key = entry_tuple[0]
+                if key in exclude_keys or key in seen_keys:
+                    continue
+                seen_keys.add(key)
+
+        for key in list(seen_keys)[:100]:
+            entry = cross_mod_data.get(key)
+            if not entry:
+                continue
             if isinstance(entry, str):
                 original = ""
                 translation = entry
@@ -1874,20 +2091,30 @@ class TranslationMemoryV2:
 
             score = 0.0
             if ratio >= 0.8:
-                score = ratio
                 if orig_clean.strip().lower() == term_lower:
-                    score += 2.0
-                if abs(len(orig_words) - len(words)) <= 1:
-                    score += 0.5
-                if len(translation) <= 30:
-                    score += 0.3
-                elif len(translation) <= 50:
-                    score += 0.1
+                    score = 3.0
                 else:
-                    score -= 0.5
+                    extra_words = orig_stems - stems
+                    missing_words = stems - orig_stems
+                    extra_ratio = len(extra_words) / len(orig_stems) if orig_stems else 0
+                    missing_ratio = len(missing_words) / len(stems) if stems else 0
+                    if extra_ratio > 0.4 or missing_ratio > 0.3:
+                        score = 0.0
+                    else:
+                        score = ratio * 0.5
+
+                if score > 0:
+                    if abs(len(orig_words) - len(words)) <= 1:
+                        score += 0.5
+                    if len(translation) <= 15:
+                        score += 0.3
+                    elif len(translation) <= 30:
+                        score += 0.1
+                    elif len(translation) > 40:
+                        score -= 1.0
 
             if score <= 0 and term_lower in orig_lower:
-                score = 0.5
+                score = 0.3
 
             if score <= 0:
                 key_clean = key.replace('_', ' ').replace('.', ' ').lower()
@@ -1896,16 +2123,16 @@ class TranslationMemoryV2:
                 key_overlap = len(stems & key_stems)
                 key_ratio = key_overlap / len(stems) if stems else 0
                 if key_ratio >= 0.8:
-                    score = key_ratio * 0.5
+                    score = key_ratio * 0.3
                 elif term_lower in key.lower().replace('_', ' '):
-                    score = 0.3
+                    score = 0.2
 
             if score > best_score:
                 best_score = score
                 best = re.sub(r'&[0-9a-fk-or]', '', translation).strip()
                 best_source = orig_clean
 
-        if best and best_score >= 0.8:
+        if best and best_score >= 1.0:
             return (best, best_source)
 
         return None

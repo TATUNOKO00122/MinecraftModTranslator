@@ -63,14 +63,14 @@ class TranslationEditCommand(QUndoCommand):
 class EditorWidget(QWidget):
     translationChanged = Signal(int, int)
     searchAllModsRequested = Signal(str)
+    cellEdited = Signal(str, str, str)
     selectionChanged = Signal(int)
+    cellEdited = Signal(str, str, str)
 
     _COLOR_LOCKED = QColor("#4a4a5a")
     _COLOR_LOCKED_FG = QColor("#8888aa")
     _COLOR_UNTRANSLATED = QColor("#1a1a2e")
     _COLOR_UNTRANSLATED_FG = QColor("#666688")
-    _COLOR_TM_MATCH = QColor("#2a4a5a")
-    _COLOR_TM_MATCH_FG = QColor("#88ccdd")
     _COLOR_AI_TRANS = QColor("#2f6b36")
     _COLOR_AI_TRANS_FG = QColor("#ffffff")
     _COLOR_AI_ISSUES = QColor("#8b5a00")
@@ -92,7 +92,6 @@ class EditorWidget(QWidget):
 
     _BRUSH_LOCKED = QBrush(_COLOR_LOCKED, Qt.SolidPattern)
     _BRUSH_UNTRANSLATED = QBrush(_COLOR_UNTRANSLATED, Qt.SolidPattern)
-    _BRUSH_TM_MATCH = QBrush(_COLOR_TM_MATCH, Qt.SolidPattern)
     _BRUSH_AI_TRANS = QBrush(_COLOR_AI_TRANS, Qt.SolidPattern)
     _BRUSH_AI_ISSUES = QBrush(_COLOR_AI_ISSUES, Qt.SolidPattern)
     _BRUSH_USER_TRANS = QBrush(_COLOR_USER_TRANS, Qt.SolidPattern)
@@ -139,11 +138,10 @@ class EditorWidget(QWidget):
         self.filter_combo.addItem("要確認", 4)
         self.filter_combo.addItem("翻訳済み", 5)
         self.filter_combo.addItem("翻訳不要（ロック）", 6)
-        self.filter_combo.addItem("TM自動適用", 7)
-        self.filter_combo.addItem("AI翻訳のみ", 8)
-        self.filter_combo.addItem("ユーザー翻訳", 9)
-        self.filter_combo.addItem("MOD内蔵", 10)
-        self.filter_combo.addItem("リソースパック", 11)
+        self.filter_combo.addItem("AI翻訳のみ", 7)
+        self.filter_combo.addItem("ユーザー翻訳", 8)
+        self.filter_combo.addItem("MOD内蔵", 9)
+        self.filter_combo.addItem("リソースパック", 10)
         self.filter_combo.currentIndexChanged.connect(self.filter_table)
         toolbar.addWidget(self.filter_combo)
         
@@ -231,6 +229,7 @@ class EditorWidget(QWidget):
         original = self.table.item(row, 1).text()
         self._update_row_color(row, new_text, original)
         self._emit_stats()
+        self.cellEdited.emit(key, original, new_text)
 
     def _emit_stats(self):
         total = self.table.rowCount() or len(self.original_data)
@@ -271,9 +270,7 @@ class EditorWidget(QWidget):
 
     def _origin_label(self, key):
         origin = self.review_status.get(key, {}).get("origin", "")
-        if origin == "tm":
-            return "翻訳メモリ"
-        elif origin == "ai":
+        if origin == "ai":
             return "AI翻訳"
         elif origin == "user":
             return "ユーザー"
@@ -324,8 +321,6 @@ class EditorWidget(QWidget):
             is_reviewed = review.get("reviewed", False)
             if has_issues and not is_reviewed:
                 brush, fg = self._BRUSH_AI_ISSUES, self._COLOR_AI_ISSUES_FG
-            elif origin == "tm":
-                brush, fg = self._BRUSH_TM_MATCH, self._COLOR_TM_MATCH_FG
             elif origin == "bundled":
                 brush, fg = self._BRUSH_BUNDLED, self._COLOR_BUNDLED_FG
             elif origin == "resource_pack":
@@ -393,18 +388,15 @@ class EditorWidget(QWidget):
             elif filter_state == 6:  # Locked (translation not needed)
                 review = self.review_status.get(key, {})
                 match_filter = review.get("locked", False) or (not translation and self._is_lockable(key, original))
-            elif filter_state == 7:  # TM auto-applied
-                review = self.review_status.get(key, {})
-                match_filter = review.get("origin") == "tm"
-            elif filter_state == 8:  # AI translated only
+            elif filter_state == 7:  # AI translated only
                 review = self.review_status.get(key, {})
                 match_filter = review.get("origin") == "ai"
-            elif filter_state == 9:  # User translated
+            elif filter_state == 8:  # User translated
                 match_filter = key in self.user_edited_keys and bool(translation)
-            elif filter_state == 10:  # Bundled (MOD内蔵)
+            elif filter_state == 9:  # Bundled (MOD内蔵)
                 review = self.review_status.get(key, {})
                 match_filter = review.get("origin") == "bundled"
-            elif filter_state == 11:  # Resource pack
+            elif filter_state == 10:  # Resource pack
                 review = self.review_status.get(key, {})
                 match_filter = review.get("origin") == "resource_pack"
             

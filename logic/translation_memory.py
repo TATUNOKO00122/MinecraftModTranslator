@@ -158,12 +158,14 @@ class TranslationMemory:
     def find_term_translations(self, batch_texts: list, cross_mod_data: dict = None,
                                 exclude_keys: set = None,
                                 limit: int = 30,
-                                cross_mod_index: dict = None) -> list:
+                                cross_mod_index: dict = None,
+                                same_mod_data: dict = None) -> list:
         return self._v2.find_term_translations(
             batch_texts, cross_mod_data=cross_mod_data,
             exclude_keys=exclude_keys,
             limit=limit,
-            cross_mod_index=cross_mod_index
+            cross_mod_index=cross_mod_index,
+            same_mod_data=same_mod_data
         )
 
     def get_stats(self) -> dict:

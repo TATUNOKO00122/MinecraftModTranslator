@@ -432,34 +432,30 @@ class TranslatorThread(QThread):
 
         return "このバッチの翻訳対象の主な種類: " + "、".join(hints)
 
+    @staticmethod
+    def _tokenize(text):
+        """テキストをクリーンアップして単語リストを返す。"""
+        cleaned = re.sub(r'&[0-9a-fk-or]', '', text)
+        cleaned = re.sub(r'[§\[\]{}()<>/|:;.,!?"\'\\]', ' ', cleaned)
+        cleaned = re.sub(r'\d+', ' ', cleaned)
+        words = [w.lower() for w in cleaned.split() if len(w) >= 2]
+        return words
+
+    @staticmethod
+    def _build_ngrams(words, max_n=4):
+        """単語リストから1-gram〜max_n-gramを全て生成する。"""
+        ngrams = set()
+        for n in range(1, min(max_n, len(words)) + 1):
+            for i in range(len(words) - n + 1):
+                ngrams.add(' '.join(words[i:i + n]))
+        return ngrams
+
     def _build_headers(self):
         return {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
             "X-Title": "Minecraft MOD Translator Desktop"
         }
-
-    def _build_glossary_caches(self):
-        if self._glossary_regex_cache:
-            return
-        if not self.glossary:
-            return
-        import time
-        t0 = time.perf_counter()
-        for en_term in self.glossary:
-            en_lower = en_term.lower()
-            en_words = en_lower.split()
-            if ' ' in en_lower:
-                pattern = r'\b' + r'\s+'.join(re.escape(w) for w in en_words) + r'\b'
-            else:
-                pattern = r'\b' + re.escape(en_lower) + r'\b'
-            self._glossary_regex_cache[en_lower] = re.compile(pattern)
-        sorted_terms = sorted(
-            self.glossary.items(),
-            key=lambda x: -len(x[0].split())
-        )
-        self._sorted_glossary_terms = sorted_terms
-        print(f"[GLOSSARY-CACHE] Built regex cache for {len(self._glossary_regex_cache)} terms in {time.perf_counter()-t0:.3f}s")
 
     def _get_precompiled_validate_glossary(self):
         if self._glossary_validate_cache is not None:
@@ -479,57 +475,52 @@ class TranslatorThread(QThread):
         return precompiled
 
     def _extract_relevant_glossary(self, batch_text):
-        """バッチテキストから関連glossary語を抽出する（単語境界認識・複合語優先・ステミング対応）。"""
+        """バッチテキストから関連glossary語をn-gram最長マッチで抽出する。"""
         if not self.glossary:
             return {}
 
-        self._build_glossary_caches()
         import time
         t0 = time.perf_counter()
 
-        batch_text_clean = batch_text.lower()
-        for pat in COMPILED_PATTERNS:
-            batch_text_clean = pat.sub(' ', batch_text_clean)
+        batch_words = self._tokenize(batch_text)
+        if not batch_words:
+            return {}
 
-        batch_words = set(re.findall(r'[a-z]{3,}', batch_text_clean))
-        batch_stems = {}
-        for w in batch_words:
-            s = self._stem_word(w)
-            if s not in batch_stems:
-                batch_stems[s] = w
+        batch_ngrams = self._build_ngrams(batch_words, max_n=4)
 
-        sorted_terms = getattr(self, '_sorted_glossary_terms', None)
-        if not sorted_terms:
-            sorted_terms = sorted(
-                self.glossary.items(),
-                key=lambda x: -len(x[0].split())
-            )
+        sorted_terms = sorted(
+            self.glossary.items(),
+            key=lambda x: -len(x[0].split())
+        )
 
         scored = []
-
         for en_term, ja_term in sorted_terms:
-            en_lower = en_term.lower()
-            compiled = self._glossary_regex_cache.get(en_lower)
-            if not compiled:
+            term_words = self._tokenize(en_term)
+            if not term_words:
                 continue
 
-            matches = compiled.findall(batch_text_clean)
-            if matches:
-                word_count = len(en_lower.split())
-                score = len(matches) * 100 * word_count
+            term_ngrams = self._build_ngrams(term_words, max_n=len(term_words))
+
+            exact_match = ' '.join(term_words)
+            if exact_match in batch_ngrams:
+                word_count = len(term_words)
+                score = 200 * word_count
                 scored.append((score, en_term, ja_term))
                 continue
 
-            term_words = en_lower.split()
-            stem_match_count = 0
-            for tw in term_words:
-                tw_stem = self._stem_word(tw)
-                if tw_stem in batch_stems or tw in batch_words:
-                    stem_match_count += 1
+            common = batch_ngrams & term_ngrams
+            if not common:
+                continue
 
-            if term_words and stem_match_count == len(term_words):
-                word_count = len(term_words)
-                scored.append((50 * word_count, en_term, ja_term))
+            max_match_len = max(len(ng.split()) for ng in common)
+            if max_match_len == 1 and len(term_words) > 1:
+                continue
+
+            score = max_match_len * 100 + len(common) * 10
+            if max_match_len == len(term_words):
+                score += 50
+
+            scored.append((score, en_term, ja_term))
 
         scored.sort(key=lambda x: -x[0])
 
@@ -575,16 +566,13 @@ class TranslatorThread(QThread):
         cache[w_lower] = w
         return w
 
-    _SIMILAR_STOP_WORDS = frozenset({
-        'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'was',
-        'one', 'our', 'had', 'his', 'how', 'its', 'let', 'may', 'new', 'now',
-        'old', 'see', 'way', 'who', 'did', 'get', 'him', 'she', 'use', 'out',
-        'any', 'from', 'them', 'some', 'than', 'been', 'have', 'will', 'into',
-        'this', 'that', 'with', 'they', 'what', 'about', 'which', 'when', 'make',
-        'like', 'just', 'over', 'such', 'take', 'each', 'very', 'your', 'also',
-    })
-
     _MAX_SIMILAR_EXAMPLE_LENGTH = 120
+    _SIMILAR_NGRAM_NORM = 500.0
+    _SIMILAR_STR_MIN = 0.2
+    _SIMILAR_NGRAM_MIN = 150
+    _SIMILAR_LEN_RATIO_MIN = 0.3
+    _SIMILAR_HYBRID_NGRAM_W = 0.5
+    _SIMILAR_HYBRID_STR_W = 0.5
 
     def _find_similar_from_loaded_mods(self, batch_texts, limit=5):
         from difflib import SequenceMatcher
@@ -595,47 +583,51 @@ class TranslatorThread(QThread):
         for key, data in self.cross_mod_data.items():
             orig = data.get("original", "")
             trans = data.get("translation", "")
+            if isinstance(orig, list):
+                orig = orig[0] if orig else ""
+            if isinstance(trans, list):
+                trans = trans[0] if trans else ""
+            if orig and trans and isinstance(orig, str) and isinstance(trans, str):
+                all_pairs.append((orig, trans))
+        for key, trans in self._existing_translations.items():
+            orig = self.items.get(key, "")
+            if not isinstance(orig, str):
+                orig = ""
+            if not isinstance(trans, str):
+                trans = ""
             if orig and trans:
                 all_pairs.append((orig, trans))
         for key, trans in self._completed_translations.items():
             orig = self.items.get(key, "")
+            if not isinstance(orig, str):
+                orig = ""
+            if not isinstance(trans, str):
+                trans = ""
             if orig and trans:
                 all_pairs.append((orig, trans))
 
         if not all_pairs:
             return []
 
-        batch_words = set()
-        cleaned_batch_map = {}
+        batch_texts_set = set(t for t in batch_texts if isinstance(t, str))
+
+        batch_ngram_sets = []
+        batch_word_sets = []
         for text in batch_texts:
             if not text or not isinstance(text, str):
                 continue
-            cleaned = re.sub(r'&[0-9a-fk-or]', '', text)
-            batch_words.update(w for w in re.findall(r'[a-zA-Z]{3,}', cleaned.lower()))
-            cleaned_batch_map[text] = cleaned.strip()
-        batch_words -= self._SIMILAR_STOP_WORDS
+            words = self._tokenize(text)
+            if not words:
+                continue
+            batch_ngram_sets.append(self._build_ngrams(words, max_n=4))
+            batch_word_sets.append(set(words))
 
-        if not batch_words:
+        if not batch_ngram_sets:
             return []
 
-        batch_stems = {self._stem_word(w) for w in batch_words}
-
-        if len(batch_stems) <= 3:
-            min_stem_count = 1
-        elif len(batch_stems) <= 8:
-            min_stem_count = 2
-        else:
-            min_stem_count = max(2, len(batch_stems) // 4)
-
-        batch_texts_set = set(t for t in batch_texts if isinstance(t, str))
-
-        batch_text_stems = []
-        for text, cleaned in cleaned_batch_map.items():
-            if not cleaned:
-                continue
-            words = set(re.findall(r'[a-zA-Z]{3,}', cleaned.lower())) - self._SIMILAR_STOP_WORDS
-            stems = {self._stem_word(w) for w in words}
-            batch_text_stems.append((text, cleaned, stems))
+        combined_batch_ngrams = set()
+        for ngs in batch_ngram_sets:
+            combined_batch_ngrams |= ngs
 
         scored = []
         seen_sources = set()
@@ -646,42 +638,44 @@ class TranslatorThread(QThread):
                 continue
 
             seen_sources.add(source)
-            source_clean = re.sub(r'&[0-9a-fk-or]', '', source)
-            source_words = set(re.findall(r'[a-zA-Z]{3,}', source_clean.lower())) - self._SIMILAR_STOP_WORDS
-            source_stems = {self._stem_word(w) for w in source_words}
-
-            if source_stems and source_stems.issubset(batch_stems) and len(source_words) <= 5:
-                scored.append((1.5, source, translation))
+            source_words = self._tokenize(source)
+            if not source_words:
                 continue
 
-            common_count = len(batch_stems & source_stems)
-            if common_count < min_stem_count:
-                continue
+            source_ngrams = self._build_ngrams(source_words, max_n=4)
+            source_word_set = set(source_words)
 
-            intersection = len(batch_stems & source_stems)
-            union = len(batch_stems | source_stems)
-            jaccard = intersection / union if union > 0 else 0.0
-
-            if jaccard < 0.4:
-                continue
-
+            best_ngram_score = 0.0
             best_str_sim = 0.0
-            source_clean_text = source_clean.strip()
-            source_len = len(source_clean_text)
-            for bt, bt_clean, bt_stems in batch_text_stems:
-                bt_len = len(bt_clean)
-                if bt_len == 0:
+            for bt_ngrams, bt_words in zip(batch_ngram_sets, batch_word_sets):
+                common = bt_ngrams & source_ngrams
+                if not common:
                     continue
-                len_ratio = source_len / bt_len if bt_len > source_len else bt_len / source_len
-                if len_ratio < 0.4:
-                    continue
-                overlap = len(bt_stems & source_stems)
-                if overlap > 0:
-                    sim = SequenceMatcher(None, bt_clean, source_clean_text, autojunk=False).ratio()
+
+                max_match_len = max(len(ng.split()) for ng in common)
+
+                batch_len = max(len(bt_words), 1)
+                source_len = len(source_words)
+                coverage = len(source_word_set & bt_words) / source_len
+
+                ng_score = max_match_len * 100 + len(common) * 10 + coverage * 50
+                if ng_score > best_ngram_score:
+                    best_ngram_score = ng_score
+
+                len_ratio = source_len / batch_len if batch_len > source_len else batch_len / source_len
+                if len_ratio >= self._SIMILAR_LEN_RATIO_MIN:
+                    sim = SequenceMatcher(None, ' '.join(source_words), ' '.join(list(bt_words)[:20]), autojunk=False).ratio()
                     if sim > best_str_sim:
                         best_str_sim = sim
 
-            hybrid = 0.4 * jaccard + 0.6 * best_str_sim
+            if best_ngram_score == 0 and best_str_sim == 0:
+                continue
+
+            ng_normed = min(best_ngram_score / self._SIMILAR_NGRAM_NORM, 1.0)
+            hybrid = self._SIMILAR_HYBRID_NGRAM_W * ng_normed + self._SIMILAR_HYBRID_STR_W * best_str_sim
+            if best_str_sim < self._SIMILAR_STR_MIN and best_ngram_score < self._SIMILAR_NGRAM_MIN:
+                continue
+
             scored.append((hybrid, source, translation))
 
         if not scored:
@@ -799,7 +793,7 @@ class TranslatorThread(QThread):
 
     def __init__(self, items, api_key, model, glossary=None, parallel_count=3, 
                  memory=None, mod_name=None, target_lang="ja_jp", source_type=None,
-                 cross_mod_data=None, temperature=0.3):
+                 cross_mod_data=None, temperature=0.3, existing_translations=None):
         super().__init__()
         self.items = items
         self._api_key = api_key
@@ -816,6 +810,7 @@ class TranslatorThread(QThread):
         self.memory = memory
         self.mod_name = mod_name
         self.cross_mod_data = cross_mod_data or {}
+        self._existing_translations = existing_translations or {}
         self._cross_mod_index = None
         if self.cross_mod_data and self.memory:
             try:
@@ -828,7 +823,6 @@ class TranslatorThread(QThread):
         self.target_lang = target_lang
         self.source_type = source_type
         self._completed_translations = {}
-        self._glossary_regex_cache = {}
         self._glossary_post_process_cache = None
         self._stem_cache = {}
         self._glossary_validate_cache = None
@@ -1230,22 +1224,43 @@ class TranslatorThread(QThread):
                 batch_keys = set(items.keys())
 
                 def _run_term_lookup():
+                    same_mod_data = {}
+                    for k, v in self._existing_translations.items():
+                        orig = self.items.get(k, "")
+                        if orig and v:
+                            same_mod_data[k] = {"original": orig, "translation": v}
+                    for k, v in self._completed_translations.items():
+                        if k not in same_mod_data:
+                            orig = self.items.get(k, "")
+                            if orig:
+                                same_mod_data[k] = {"original": orig, "translation": v}
                     return self.memory.find_term_translations(
                         batch_texts, cross_mod_data=self.cross_mod_data,
                         exclude_keys=batch_keys,
                         limit=30,
-                        cross_mod_index=self._cross_mod_index
+                        cross_mod_index=self._cross_mod_index,
+                        same_mod_data=same_mod_data
                     )
 
-                with ThreadPoolExecutor(max_workers=1) as executor:
+                with ThreadPoolExecutor(max_workers=2) as executor:
                     term_future = executor.submit(_run_term_lookup)
+                    similar_future = executor.submit(
+                        self._find_similar_from_loaded_mods, batch_texts, 5
+                    )
                     try:
                         term_translations = term_future.result() or []
                         print(f"[TM-TERM] returned: {len(term_translations)} results")
                     except Exception as e:
+                        import traceback
                         print(f"TM term lookup error: {e}")
-
-                similar_examples = self._find_similar_from_loaded_mods(batch_texts, limit=5)
+                        traceback.print_exc()
+                    try:
+                        similar_examples = similar_future.result() or []
+                    except Exception as e:
+                        import traceback
+                        print(f"Similar lookup error: {e}")
+                        traceback.print_exc()
+                        similar_examples = []
 
                 print(f"[TM-PARALLEL] Both lookups completed in {_time.perf_counter()-t_parallel_start:.3f}s")
 
